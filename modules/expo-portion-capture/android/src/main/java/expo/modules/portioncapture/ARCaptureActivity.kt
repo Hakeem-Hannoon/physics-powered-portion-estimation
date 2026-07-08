@@ -73,10 +73,8 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     // ~7 mm; a median over ~6 accepted frames cuts that ~2.5× and absorbs
     // the press/lift jolt spikes entirely.
     private const val STEADY_WINDOW = 6
-    private const val ANCHOR_MIN_SAMPLES = 4
-    private const val ANCHOR_MIN_MS = 120L
-    private const val SHAKE_LINEAR_M_S = 0.25f
-    private const val SHAKE_ANGULAR_RAD_S = 0.35f
+    private const val SHAKE_LINEAR_M_S = 1.0f
+    private const val SHAKE_ANGULAR_RAD_S = 1.5f
     private const val PLANE_SNAP_M = 0.008f
   }
 
@@ -116,8 +114,6 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
   // Stabilization state (GL thread).
   private val steadySamples = ArrayDeque<FloatArray>()
-  private var anchorSamples: MutableList<FloatArray>? = null
-  private var anchorStartedMs = 0L
   private var prevPose: Pose? = null
   private var prevTimestampNs = 0L
   private var introUntilMs = 0L
@@ -338,29 +334,18 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     if (measureHeld) {
       if (activeStart == null) {
         if (rawPoint != null && hit != null) {
-          if (anchorSamples == null) {
-            // Anchor over a short window instead of the press frame — the
-            // finger hitting the plate jolts the phone at that exact moment.
-            anchorSamples = mutableListOf()
-            anchorStartedMs = SystemClock.uptimeMillis()
-            rememberPlane(hit)
-            // Wall or ceiling anchor: definitely off-mission, never a table
-            // at a bad angle (those detect horizontal-upward or fail).
-            val anchorPlane = hit.trackable as? Plane
-            activeOffTarget = anchorPlane != null &&
-              anchorPlane.type != Plane.Type.HORIZONTAL_UPWARD_FACING
-            activeFar = (reticleDistanceM ?: 0f) > FAR_WARN_M
-          }
-          val samples = anchorSamples!!
-          if (!shaky) samples.add(rawPoint)
-          val elapsedMs = SystemClock.uptimeMillis() - anchorStartedMs
-          if ((samples.size >= ANCHOR_MIN_SAMPLES && elapsedMs >= ANCHOR_MIN_MS) ||
-            samples.size >= STEADY_WINDOW
-          ) {
-            activeStart = medianPoint(samples)
-            activeEnd = activeStart
-            anchorSamples = null
-          }
+          rememberPlane(hit)
+          // Wall or ceiling anchor: definitely off-mission, never a table
+          // at a bad angle (those detect horizontal-upward or fail).
+          val anchorPlane = hit.trackable as? Plane
+          activeOffTarget = anchorPlane != null &&
+            anchorPlane.type != Plane.Type.HORIZONTAL_UPWARD_FACING
+          activeFar = (reticleDistanceM ?: 0f) > FAR_WARN_M
+          // Anchor instantly, from the PRE-press median: the buffer filled
+          // before the finger jolt could contaminate it.
+          activeStart =
+            if (steadySamples.isNotEmpty()) medianPoint(steadySamples) else rawPoint
+          activeEnd = activeStart
         } else {
           postLabel("Aim the sparkle at a surface first")
         }
@@ -368,16 +353,8 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
         activeEnd = steadyPoint
         postLabel(formatMeters(dist(activeStart!!, steadyPoint)))
       }
-    } else if (activeStart != null || anchorSamples != null) {
-      // Released. A still-pending anchor with enough evidence resolves first;
-      // the endpoint is already the median-filtered (pre-lift-jolt) reading.
-      anchorSamples?.let { samples ->
-        if (activeStart == null && samples.size >= 2) {
-          activeStart = medianPoint(samples)
-          activeEnd = activeStart
-        }
-        anchorSamples = null
-      }
+    } else if (activeStart != null) {
+      // Released: commit with the median-filtered (pre-lift-jolt) endpoint.
       val start = activeStart
       val end = activeEnd
       activeStart = null
@@ -434,9 +411,10 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     lockedPlane?.centerPose?.yAxis ?: fallbackNormal ?: floatArrayOf(0f, 1f, 0f)
 
   /**
-   * Shake gate: linear + angular camera velocity from pose deltas. The world
-   * frame already compensates phone motion (VIO); this rejects the residual —
-   * frames blurred by tremor or the plate press/lift jolt.
+   * Shake gate for VIOLENT motion only (fast swings, hard jolts) — pose-delta
+   * linear + angular velocity. Ordinary tremor passes through; filtering it
+   * is the medians' job. Thresholds must stay generous: a strict gate starves
+   * the buffers and blocks measuring outright.
    */
   private fun isShaky(frame: Frame, camera: Camera): Boolean {
     val pose = camera.pose
@@ -738,11 +716,6 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       text = "Undo"
       setOnClickListener { undoRequested = true }
     }
-    val cancelButton = Button(this).apply {
-      text = "Cancel"
-      setOnClickListener { finishWith(null, null) }
-    }
-
     fun params(gravity: Int, marginBottom: Int = 0, marginTop: Int = 0) =
       FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -767,7 +740,6 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       )
       addView(shutterButton, params(Gravity.BOTTOM or Gravity.END, marginBottom = 44))
       addView(undoButton, params(Gravity.BOTTOM or Gravity.START, marginBottom = 44))
-      addView(cancelButton, params(Gravity.TOP or Gravity.START, marginTop = 36))
     }
   }
 }
