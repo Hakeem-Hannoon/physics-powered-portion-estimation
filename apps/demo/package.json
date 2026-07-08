@@ -15,11 +15,11 @@
     "expo-portion-capture": "file:../../modules/expo-portion-capture",
     "expo-status-bar": "~2.2.0",
     "react": "19.0.0",
-    "react-native": "0.79.2",
+    "react-native": "0.79.6",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/react": "~19.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "~5.8.3"
   }
 }
