@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.ImageFormat
 import android.graphics.Paint
 import android.graphics.Rect
@@ -15,7 +16,6 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.os.Bundle
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
@@ -26,7 +26,6 @@ import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
-import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
@@ -39,12 +38,17 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * Full-screen ARCore capture with the tap-hold-drag metric ruler.
- * Mirrors the iOS ARCaptureViewController: raycast strokes (MATH.md §2),
- * then a shutter that freezes the frame + everything the geometry needs.
- * Emits the same versioned CapturePayload (packages/pipeline contracts) —
- * ARCore's physical-camera pose uses the y-up/z-backward convention ARKit
- * uses, so the pipeline consumes both platforms unchanged.
+ * Full-screen ARCore capture with a center reticle and a hold-to-measure
+ * trigger (the 45 lb plate button): aim the reticle, hold the plate to anchor
+ * point A, move the phone to stretch the ruler, release to commit — the
+ * finger never covers the food. Raycasts hit any tracked surface (planes in
+ * any orientation, depth points, feature points), so measuring is never
+ * gated on table detection; a detected support plane still improves the
+ * portion math (MATH.md §3) and the coaching says so.
+ *
+ * Emits the same versioned CapturePayload as the iOS module
+ * (packages/pipeline contracts; ARCore's physical-camera pose shares ARKit's
+ * y-up/z-backward convention).
  */
 class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   companion object {
@@ -64,6 +68,7 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   private lateinit var hintLabel: TextView
   private lateinit var shutterButton: Button
   private lateinit var undoButton: Button
+  private lateinit var plateButton: PlateButton
   private lateinit var rotationHelper: DisplayRotationHelper
   private val background = BackgroundRenderer()
 
@@ -78,19 +83,19 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   private val strokes = mutableListOf<Stroke>()
   private var activeStart: FloatArray? = null
   private var activeEnd: FloatArray? = null
+  private var reticlePoint: FloatArray? = null
   private var lockedPlane: Plane? = null
   private var fallbackNormal: FloatArray? = null
   private var fallbackPoint: FloatArray? = null
 
-  // UI-thread → GL-thread mailbox
-  private val touchLock = Any()
-  private var pendingAction = -1
-  private var pendingX = 0f
-  private var pendingY = 0f
+  // UI-thread → GL-thread signals
+  @Volatile private var measureHeld = false
   @Volatile private var captureRequested = false
   @Volatile private var undoRequested = false
+  @Volatile private var shutterReady = false
   private var delivered = false
   private var lastLabel = ""
+  private var lastHint = ""
   private var lastShutterEnabled = false
 
   // MARK: lifecycle
@@ -105,12 +110,11 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       preserveEGLContextOnPause = true
       setRenderer(this@ARCaptureActivity)
       renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-      setOnTouchListener { _, event -> onCameraTouch(event) }
     }
     rulerOverlay = RulerOverlay(this)
     rotationHelper = DisplayRotationHelper(this)
     setContentView(buildLayout())
-    updateHint(false)
+    hintLabel.text = "Point the circle at your plate…"
   }
 
   override fun onResume() {
@@ -173,10 +177,16 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
           val created = Session(this)
           created.configure(
             Config(created).apply {
-              planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
+              // Planes in any orientation, plus depth where the hardware
+              // provides it — the ruler is free to hit any surface.
+              planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
               updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
               focusMode = Config.FocusMode.AUTO
-              depthMode = Config.DepthMode.DISABLED
+              depthMode = if (created.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                Config.DepthMode.AUTOMATIC
+              } else {
+                Config.DepthMode.DISABLED
+              }
             }
           )
           session = created
@@ -196,17 +206,6 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     }
     message?.let { runOnUiThread { measureLabel.text = it } }
     finish()
-  }
-
-  // MARK: touch mailbox (UI thread)
-
-  private fun onCameraTouch(event: MotionEvent): Boolean {
-    synchronized(touchLock) {
-      pendingAction = event.actionMasked
-      pendingX = event.x
-      pendingY = event.y
-    }
-    return true
   }
 
   // MARK: GLSurfaceView.Renderer (GL thread)
@@ -243,8 +242,8 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       undoRequested = false
       strokes.removeLastOrNull()
     }
-    processTouch(frame, camera)
-    publishOverlay(frame, camera)
+    updateReticleAndMeasure(frame, camera)
+    publishOverlay(camera)
 
     if (captureRequested && camera.trackingState == TrackingState.TRACKING) {
       try {
@@ -262,76 +261,72 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     }
   }
 
-  // MARK: the ruler (MATH.md §2.3), GL thread
+  // MARK: reticle + hold-to-measure (MATH.md §2.3), GL thread
 
-  private fun processTouch(frame: Frame, camera: Camera) {
-    val action: Int
-    val x: Float
-    val y: Float
-    synchronized(touchLock) {
-      action = pendingAction
-      x = pendingX
-      y = pendingY
-      if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP ||
-        action == MotionEvent.ACTION_CANCEL
-      ) {
-        pendingAction = -1 // one-shot transitions; MOVE stays live
-      }
+  private fun updateReticleAndMeasure(frame: Frame, camera: Camera) {
+    if (camera.trackingState != TrackingState.TRACKING) {
+      reticlePoint = null
+      return
     }
-    if (camera.trackingState != TrackingState.TRACKING) return
+    val w = glView.width
+    val h = glView.height
+    if (w == 0 || h == 0) return
 
-    when (action) {
-      MotionEvent.ACTION_DOWN -> {
-        val hit = bestHit(frame, x, y) ?: run {
-          postLabel("Point at the table surface")
-          return
+    val hit = bestHit(frame, w / 2f, h / 2f)
+    reticlePoint = hit?.hitPose?.translation
+
+    if (measureHeld) {
+      val point = reticlePoint
+      if (activeStart == null) {
+        if (point != null && hit != null) {
+          rememberPlane(hit)
+          activeStart = point
+          activeEnd = point
+        } else {
+          postLabel("Aim the circle at a surface first")
         }
-        rememberPlane(hit)
-        activeStart = hit.hitPose.translation
-        activeEnd = null
+      } else if (point != null) {
+        activeEnd = point
+        postLabel(formatMeters(dist(activeStart!!, point)))
       }
-      MotionEvent.ACTION_MOVE -> {
-        if (activeStart == null) return
-        val hit = bestHit(frame, x, y) ?: return
-        activeEnd = hit.hitPose.translation
-        postLabel(formatMeters(dist(activeStart!!, activeEnd!!)))
-      }
-      MotionEvent.ACTION_UP -> {
-        val start = activeStart
-        val end = activeEnd
-        activeStart = null
-        activeEnd = null
-        if (start == null || end == null) return
+    } else if (activeStart != null) {
+      // Released: commit the stroke.
+      val start = activeStart!!
+      val end = activeEnd
+      activeStart = null
+      activeEnd = null
+      if (end != null) {
         val length = dist(start, end)
         if (length < MIN_COMMIT_LENGTH_M) {
-          postLabel("Too short — drag a longer line")
-          return
+          postLabel("Too short — sweep further while holding the plate")
+        } else {
+          val direction = normalized(sub(end, start))
+          val vertical = abs(dot(direction, planeNormal())) > 0.7f
+          strokes.add(Stroke(start, end, if (vertical) "vertical" else "horizontal"))
+          postLabel(formatMeters(length))
         }
-        val direction = normalized(sub(end, start))
-        val vertical = abs(dot(direction, planeNormal())) > 0.7f
-        strokes.add(Stroke(start, end, if (vertical) "vertical" else "horizontal"))
-        postLabel(formatMeters(length))
-      }
-      MotionEvent.ACTION_CANCEL -> {
-        activeStart = null
-        activeEnd = null
       }
     }
   }
 
-  /** Prefer plane hits inside the detected polygon; fall back to point hits. */
+  /**
+   * Hit preference: plane-within-polygon → any tracked plane → depth/feature
+   * points (free-space measuring — no table required).
+   */
   private fun bestHit(frame: Frame, x: Float, y: Float): HitResult? {
     val hits = frame.hitTest(x, y)
     return hits.firstOrNull { hit ->
       val plane = hit.trackable as? Plane
       plane != null && plane.trackingState == TrackingState.TRACKING &&
         plane.isPoseInPolygon(hit.hitPose)
+    } ?: hits.firstOrNull { hit ->
+      (hit.trackable as? Plane)?.trackingState == TrackingState.TRACKING
     } ?: hits.firstOrNull { it.trackable !is Plane }
   }
 
   private fun rememberPlane(hit: HitResult) {
     val plane = hit.trackable as? Plane
-    if (plane != null) {
+    if (plane != null && plane.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
       lockedPlane = plane
     } else if (fallbackNormal == null) {
       fallbackNormal = hit.hitPose.yAxis
@@ -344,9 +339,10 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
   // MARK: overlay projection (GL thread → UI thread)
 
-  private fun publishOverlay(frame: Frame, camera: Camera) {
+  private fun publishOverlay(camera: Camera) {
     val segments = mutableListOf<RulerOverlay.Segment>()
-    if (camera.trackingState == TrackingState.TRACKING) {
+    val tracking = camera.trackingState == TrackingState.TRACKING
+    if (tracking) {
       val view = FloatArray(16)
       val proj = FloatArray(16)
       val vp = FloatArray(16)
@@ -383,24 +379,40 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
         }
       }
     }
-    rulerOverlay.publish(segments)
+    rulerOverlay.publish(segments, reticleLocked = tracking && reticlePoint != null)
 
-    val enabled = !requireStroke ||
+    val ready = !requireStroke ||
       strokes.any { it.kind == "horizontal" && it.lengthM >= minStrokeLengthM }
-    if (enabled != lastShutterEnabled) {
-      lastShutterEnabled = enabled
-      runOnUiThread {
-        shutterButton.isEnabled = enabled
-        shutterButton.alpha = if (enabled) 1f else 0.4f
-        updateHint(enabled)
-      }
+    shutterReady = ready
+    if (ready != lastShutterEnabled) {
+      lastShutterEnabled = ready
+      runOnUiThread { shutterButton.alpha = if (ready) 1f else 0.4f }
     }
+
+    // Live coaching: the hint always states the next action.
+    postHint(
+      when {
+        !tracking -> "Move the phone slowly so tracking can start…"
+        measureHeld || activeStart != null -> "Sweep to the end point, then let go of the plate"
+        ready && lockedPlane == null ->
+          "Ready — sweeping the table into view sharpens portion accuracy"
+        ready -> "Add a height measurement up the food, or shoot"
+        reticlePoint == null -> "Point the circle at the food or table…"
+        else -> "Hold the plate, sweep ≥ ${(minStrokeLengthM * 100).toInt()} cm, release"
+      }
+    )
   }
 
   private fun postLabel(text: String) {
     if (text == lastLabel) return
     lastLabel = text
     runOnUiThread { measureLabel.text = text }
+  }
+
+  private fun postHint(text: String) {
+    if (text == lastHint) return
+    lastHint = text
+    runOnUiThread { hintLabel.text = text }
   }
 
   // MARK: payload (docs/ARCHITECTURE.md contract), GL thread
@@ -451,7 +463,7 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
         normal = floatArrayOf(0f, 1f, 0f)
         point = strokes.first().p1
       }
-      else -> throw IllegalStateException("No table surface detected — draw a ruler stroke first")
+      else -> throw IllegalStateException("Measure at least one stroke before capturing")
     }
     val n = normalized(normal)
     val d0 = dot(n, point)
@@ -523,14 +535,6 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
   // MARK: chrome
 
-  private fun updateHint(hasValidStroke: Boolean) {
-    hintLabel.text = if (hasValidStroke) {
-      "Add a vertical stroke up the food for better accuracy, or shoot"
-    } else {
-      "Hold and drag along the plate to measure (≥ ${(minStrokeLengthM * 100).toInt()} cm)"
-    }
-  }
-
   private fun buildLayout(): FrameLayout {
     val density = resources.displayMetrics.density
     fun dp(v: Int) = (v * density).toInt()
@@ -545,12 +549,20 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       textSize = 13f
       gravity = Gravity.CENTER
     }
+    plateButton = PlateButton(this) { held -> measureHeld = held }
     shutterButton = Button(this).apply {
       text = "●"
-      textSize = 28f
-      isEnabled = false
+      textSize = 24f
       alpha = 0.4f
-      setOnClickListener { captureRequested = true }
+      // Always clickable: a dimmed shutter explains itself when tapped.
+      setOnClickListener {
+        if (shutterReady) {
+          captureRequested = true
+        } else {
+          measureLabel.text =
+            "Measure a ≥ ${(minStrokeLengthM * 100).toInt()} cm span with the plate first"
+        }
+      }
     }
     undoButton = Button(this).apply {
       text = "Undo"
@@ -576,16 +588,25 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     return FrameLayout(this).apply {
       addView(glView, FrameLayout.LayoutParams(-1, -1))
       addView(rulerOverlay, FrameLayout.LayoutParams(-1, -1))
-      addView(measureLabel, params(Gravity.TOP or Gravity.CENTER_HORIZONTAL, marginTop = 40))
-      addView(hintLabel, params(Gravity.TOP or Gravity.CENTER_HORIZONTAL, marginTop = 76))
-      addView(shutterButton, params(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, marginBottom = 32))
-      addView(cancelButton, params(Gravity.BOTTOM or Gravity.START, marginBottom = 40))
-      addView(undoButton, params(Gravity.BOTTOM or Gravity.END, marginBottom = 40))
+      addView(measureLabel, params(Gravity.TOP or Gravity.CENTER_HORIZONTAL, marginTop = 44))
+      addView(hintLabel, params(Gravity.TOP or Gravity.CENTER_HORIZONTAL, marginTop = 80))
+      addView(
+        plateButton,
+        FrameLayout.LayoutParams(dp(92), dp(92), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+          .apply { bottomMargin = dp(28) },
+      )
+      addView(shutterButton, params(Gravity.BOTTOM or Gravity.END, marginBottom = 44))
+      addView(undoButton, params(Gravity.BOTTOM or Gravity.START, marginBottom = 44))
+      addView(cancelButton, params(Gravity.TOP or Gravity.START, marginTop = 36))
     }
   }
 }
 
-/** 2D overlay: strokes projected to screen space each frame, drawn on canvas. */
+/**
+ * 2D overlay: the center reticle plus strokes projected to screen space each
+ * frame. The reticle ring is solid yellow when locked onto a surface and
+ * dashed gray while searching.
+ */
 class RulerOverlay(context: Activity) : View(context) {
   class Segment(
     val x1: Float, val y1: Float, val x2: Float, val y2: Float,
@@ -593,6 +614,9 @@ class RulerOverlay(context: Activity) : View(context) {
   )
 
   @Volatile private var segments: List<Segment> = emptyList()
+  @Volatile private var reticleLocked = false
+
+  private val density = context.resources.displayMetrics.density
 
   private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = Color.YELLOW
@@ -605,9 +629,22 @@ class RulerOverlay(context: Activity) : View(context) {
     textSize = 40f
     setShadowLayer(4f, 0f, 0f, Color.BLACK)
   }
+  private val reticleLockedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    color = Color.YELLOW
+    strokeWidth = 3f * density
+  }
+  private val reticleSearchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    color = 0xB3FFFFFF.toInt()
+    strokeWidth = 2f * density
+    pathEffect = DashPathEffect(floatArrayOf(6f * density, 5f * density), 0f)
+  }
+  private val reticleDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
 
-  fun publish(next: List<Segment>) {
-    segments = next
+  fun publish(nextSegments: List<Segment>, reticleLocked: Boolean) {
+    segments = nextSegments
+    this.reticleLocked = reticleLocked
     postInvalidateOnAnimation()
   }
 
@@ -624,6 +661,19 @@ class RulerOverlay(context: Activity) : View(context) {
         text,
       )
     }
+
+    // The center reticle: where the next anchor lands.
+    val cx = width / 2f
+    val cy = height / 2f
+    val r = 24f * density
+    if (reticleLocked) {
+      canvas.drawCircle(cx, cy, r, reticleLockedPaint)
+      reticleDot.color = Color.YELLOW
+    } else {
+      canvas.drawCircle(cx, cy, r, reticleSearchPaint)
+      reticleDot.color = 0xB3FFFFFF.toInt()
+    }
+    canvas.drawCircle(cx, cy, 3f * density, reticleDot)
   }
 }
 
