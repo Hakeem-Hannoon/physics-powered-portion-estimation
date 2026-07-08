@@ -34,7 +34,13 @@ CAPTURE (native AR, geometry only)                  INFERENCE (on-device)
                                      totals, quality: { est_relative_error, … } }
 ```
 
-The capture gesture: touch down anchors a 3D point on the table (a raycast through the finger against the tracked plane), dragging extends a live yellow ruler with a cm readout, releasing commits the stroke. Horizontal strokes calibrate scale; a vertical stroke up the food measures its height. The shutter then freezes the frame together with everything the math needs: intrinsics, camera pose, plane equation, strokes, and the LiDAR depth map when the hardware has one.
+The capture gesture: aim the sparkle reticle at the food, hold the plate button to anchor a 3D point (a raycast against tracked geometry), slide your thumb on the plate to sweep the reticle — the phone stays steady — and release to commit the stroke with a live cm readout. Horizontal strokes calibrate scale; a vertical stroke up the food measures its height. The shutter then freezes the frame together with everything the math needs: intrinsics, camera pose, plane equation, strokes, and the depth map when the hardware has one.
+
+**Capture technique** — it's physics, so technique matters:
+
+- **Hold the phone steady.** The plate trackpad does the sweeping, so your hands can stay parked. Every anchor is shake-gated and median-filtered over multiple frames ([`docs/MATH.md`](docs/MATH.md) §2.4); steadier frames mean tighter medians.
+- **Screen parallel to the table, shooting from above.** Grazing rays amplify depth error, and the top-down view minimizes the perspective correction the homography has to unwind.
+- **Get close** — under a meter. Angular resolution converts to millimeters up close and to centimeters far away; the app warns live beyond 1.5 m.
 
 Every result ships with a propagated error estimate and stays user-editable — the system proposes, the user confirms.
 

@@ -28,6 +28,7 @@ import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
+import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
@@ -37,6 +38,7 @@ import java.util.UUID
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
+import kotlin.math.acos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -65,6 +67,17 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
     /** Finger-to-reticle amplification for the plate trackpad. */
     private const val PAD_GAIN = 2.2f
+
+    // Anchor/endpoint stabilization (MATH.md §2.4): shake-gated samples,
+    // component-wise medians. 1° of tremor at 40 cm swings a raw endpoint
+    // ~7 mm; a median over ~6 accepted frames cuts that ~2.5× and absorbs
+    // the press/lift jolt spikes entirely.
+    private const val STEADY_WINDOW = 6
+    private const val ANCHOR_MIN_SAMPLES = 4
+    private const val ANCHOR_MIN_MS = 120L
+    private const val SHAKE_LINEAR_M_S = 0.25f
+    private const val SHAKE_ANGULAR_RAD_S = 0.35f
+    private const val PLANE_SNAP_M = 0.008f
   }
 
   private class Stroke(val p1: FloatArray, val p2: FloatArray, val kind: String) {
@@ -100,6 +113,14 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   // Plate-trackpad steering (UI thread writes, GL thread reads).
   @Volatile private var padDx = 0f
   @Volatile private var padDy = 0f
+
+  // Stabilization state (GL thread).
+  private val steadySamples = ArrayDeque<FloatArray>()
+  private var anchorSamples: MutableList<FloatArray>? = null
+  private var anchorStartedMs = 0L
+  private var prevPose: Pose? = null
+  private var prevTimestampNs = 0L
+  private var introUntilMs = 0L
   private var activeOffTarget = false
   private var activeFar = false
   private var funnyShown = false
@@ -133,7 +154,8 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     rulerOverlay = RulerOverlay(this)
     rotationHelper = DisplayRotationHelper(this)
     setContentView(buildLayout())
-    hintLabel.text = "Point the circle at your plate…"
+    hintLabel.text = "Hold the phone steady above the food — screen parallel to the table reads best"
+    introUntilMs = SystemClock.uptimeMillis() + 4000
   }
 
   override fun onResume() {
@@ -285,46 +307,82 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   private fun updateReticleAndMeasure(frame: Frame, camera: Camera) {
     if (camera.trackingState != TrackingState.TRACKING) {
       reticlePoint = null
+      steadySamples.clear()
       return
     }
     val w = glView.width
     val h = glView.height
     if (w == 0 || h == 0) return
 
+    val shaky = isShaky(frame, camera)
+
     // The plate trackpad steers the reticle, so the phone stays steady.
     reticleX = w / 2f + (padDx * PAD_GAIN).coerceIn(-w * 0.42f, w * 0.42f)
     reticleY = h / 2f + (padDy * PAD_GAIN).coerceIn(-h * 0.42f, h * 0.42f)
     val hit = bestHit(frame, reticleX, reticleY)
-    reticlePoint = hit?.hitPose?.translation
-    reticleDistanceM = reticlePoint?.let { dist(it, camera.pose.translation) }
+    val rawPoint = hit?.hitPose?.translation?.let(::snapToSupportPlane)
+    reticlePoint = rawPoint
+    reticleDistanceM = rawPoint?.let { dist(it, camera.pose.translation) }
+
+    // Robust endpoint (MATH.md §2.4): shake-gated samples, component-wise
+    // median over recent frames. Tremor and the press/lift jolts are
+    // zero-mean spikes; the median absorbs them.
+    if (rawPoint == null) {
+      steadySamples.clear()
+    } else if (!shaky) {
+      steadySamples.addLast(rawPoint)
+      while (steadySamples.size > STEADY_WINDOW) steadySamples.removeFirst()
+    }
+    val steadyPoint = if (steadySamples.isEmpty()) rawPoint else medianPoint(steadySamples)
 
     if (measureHeld) {
-      val point = reticlePoint
       if (activeStart == null) {
-        if (point != null && hit != null) {
-          rememberPlane(hit)
-          // Wall or ceiling anchor: definitely off-mission, never a table at
-          // a bad angle (those detect as horizontal-upward or fail entirely).
-          val anchorPlane = hit.trackable as? Plane
-          activeOffTarget = anchorPlane != null &&
-            anchorPlane.type != Plane.Type.HORIZONTAL_UPWARD_FACING
-          activeFar = (reticleDistanceM ?: 0f) > FAR_WARN_M
-          activeStart = point
-          activeEnd = point
+        if (rawPoint != null && hit != null) {
+          if (anchorSamples == null) {
+            // Anchor over a short window instead of the press frame — the
+            // finger hitting the plate jolts the phone at that exact moment.
+            anchorSamples = mutableListOf()
+            anchorStartedMs = SystemClock.uptimeMillis()
+            rememberPlane(hit)
+            // Wall or ceiling anchor: definitely off-mission, never a table
+            // at a bad angle (those detect horizontal-upward or fail).
+            val anchorPlane = hit.trackable as? Plane
+            activeOffTarget = anchorPlane != null &&
+              anchorPlane.type != Plane.Type.HORIZONTAL_UPWARD_FACING
+            activeFar = (reticleDistanceM ?: 0f) > FAR_WARN_M
+          }
+          val samples = anchorSamples!!
+          if (!shaky) samples.add(rawPoint)
+          val elapsedMs = SystemClock.uptimeMillis() - anchorStartedMs
+          if ((samples.size >= ANCHOR_MIN_SAMPLES && elapsedMs >= ANCHOR_MIN_MS) ||
+            samples.size >= STEADY_WINDOW
+          ) {
+            activeStart = medianPoint(samples)
+            activeEnd = activeStart
+            anchorSamples = null
+          }
         } else {
-          postLabel("Aim the circle at a surface first")
+          postLabel("Aim the sparkle at a surface first")
         }
-      } else if (point != null) {
-        activeEnd = point
-        postLabel(formatMeters(dist(activeStart!!, point)))
+      } else if (steadyPoint != null) {
+        activeEnd = steadyPoint
+        postLabel(formatMeters(dist(activeStart!!, steadyPoint)))
       }
-    } else if (activeStart != null) {
-      // Released: commit the stroke.
-      val start = activeStart!!
+    } else if (activeStart != null || anchorSamples != null) {
+      // Released. A still-pending anchor with enough evidence resolves first;
+      // the endpoint is already the median-filtered (pre-lift-jolt) reading.
+      anchorSamples?.let { samples ->
+        if (activeStart == null && samples.size >= 2) {
+          activeStart = medianPoint(samples)
+          activeEnd = activeStart
+        }
+        anchorSamples = null
+      }
+      val start = activeStart
       val end = activeEnd
       activeStart = null
       activeEnd = null
-      if (end != null) {
+      if (start != null && end != null) {
         val length = dist(start, end)
         if (length < MIN_COMMIT_LENGTH_M) {
           postLabel("Too short — slide your finger further while holding the plate")
@@ -374,6 +432,53 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
   private fun planeNormal(): FloatArray =
     lockedPlane?.centerPose?.yAxis ?: fallbackNormal ?: floatArrayOf(0f, 1f, 0f)
+
+  /**
+   * Shake gate: linear + angular camera velocity from pose deltas. The world
+   * frame already compensates phone motion (VIO); this rejects the residual —
+   * frames blurred by tremor or the plate press/lift jolt.
+   */
+  private fun isShaky(frame: Frame, camera: Camera): Boolean {
+    val pose = camera.pose
+    val nowNs = frame.timestamp
+    val prev = prevPose
+    val prevNs = prevTimestampNs
+    prevPose = pose
+    prevTimestampNs = nowNs
+    if (prev == null || prevNs == 0L || nowNs <= prevNs) return false
+    val dt = (nowNs - prevNs) / 1e9f
+    if (dt > 0.25f) return false
+    val linear = dist(pose.translation, prev.translation) / dt
+    val q1 = FloatArray(4).also { prev.getRotationQuaternion(it, 0) }
+    val q2 = FloatArray(4).also { pose.getRotationQuaternion(it, 0) }
+    val qDot = abs(q1[0] * q2[0] + q1[1] * q2[1] + q1[2] * q2[2] + q1[3] * q2[3])
+      .coerceAtMost(1f)
+    val angular = 2f * acos(qDot) / dt
+    return linear > SHAKE_LINEAR_M_S || angular > SHAKE_ANGULAR_RAD_S
+  }
+
+  /**
+   * Points within a few mm of the locked support plane snap onto it — the
+   * plane is temporally filtered by ARCore and far steadier than per-frame
+   * hits. Height strokes (several cm above) pass through untouched.
+   */
+  private fun snapToSupportPlane(p: FloatArray): FloatArray {
+    val plane = lockedPlane ?: return p
+    if (plane.trackingState != TrackingState.TRACKING) return p
+    val n = normalized(plane.centerPose.yAxis)
+    val offset = dot(sub(p, plane.centerPose.translation), n)
+    if (abs(offset) >= PLANE_SNAP_M) return p
+    return floatArrayOf(p[0] - n[0] * offset, p[1] - n[1] * offset, p[2] - n[2] * offset)
+  }
+
+  /** Component-wise median — robust to the outlier frames a mean would chase. */
+  private fun medianPoint(samples: Collection<FloatArray>): FloatArray {
+    fun med(index: Int): Float {
+      val sorted = samples.map { it[index] }.sorted()
+      return sorted[sorted.size / 2]
+    }
+    return floatArrayOf(med(0), med(1), med(2))
+  }
 
   // MARK: overlay projection (GL thread → UI thread)
 
@@ -432,7 +537,9 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       runOnUiThread { shutterButton.alpha = if (ready) 1f else 0.4f }
     }
 
-    // Live coaching: the hint always states the next action.
+    // Live coaching: the hint always states the next action. The intro tip
+    // (hold steady, parallel to the table) owns the first few seconds.
+    if (SystemClock.uptimeMillis() < introUntilMs && !measureHeld && strokes.isEmpty()) return
     val reticleDist = reticleDistanceM
     postHint(
       when {
