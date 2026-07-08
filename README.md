@@ -160,7 +160,7 @@ Three layers. Results are recorded here as each layer runs; unit results are cur
 
 ## Training on cloud GPUs
 
-Two jobs need the H100s; both are packaged as ready-to-run Colab notebooks in [`model/colab/`](model/colab/), with all artifacts persisted to the project's shared Drive folder ([view-only](https://drive.google.com/drive/folders/1y1hDjkfHsazsOoe4LJjWKoEKj2bHKKjd)) so runtime disconnects lose nothing:
+Two jobs need the H100s; both are packaged as ready-to-run Colab notebooks in [`model/colab/`](model/colab/), with all **outputs** persisted to the project's shared Drive folder ([view-only](https://drive.google.com/drive/folders/1y1hDjkfHsazsOoe4LJjWKoEKj2bHKKjd)) so runtime disconnects lose nothing (the raw Nutrition5k dataset stages to the VM's local disk instead — Drive's FUSE mount aborts on the thousands of per-dish RGB-D reads):
 
 1. **SegFormer fine-tune** — `model/train/segformer_foodseg103.py`, single H100, ~2–3 h (B0) / 4–6 h (B1). Dataset streams from Hugging Face.
 2. **Nutrition5k pipeline** — one-time 181 GB `gsutil` download (plan ~200 GB disk), manifest extraction (`model/data/prepare_nutrition5k.py`, CPU-bound), prior fitting (seconds), then the mass regressor (`model/train/mass_regressor_nutrition5k.py`, ~1–2 h at batch 128).

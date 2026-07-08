@@ -14,7 +14,7 @@ Training, export, and prior fitting. The full model landscape with verified IDs,
 
 ## Colab
 
-Ready-to-run notebooks for every GPU step live in [`colab/`](colab/) — they mount Drive, clone this repo, and persist all artifacts (dataset, checkpoints, manifest, priors, exports) to the shared project Drive folder ([view-only](https://drive.google.com/drive/folders/1y1hDjkfHsazsOoe4LJjWKoEKj2bHKKjd)).
+Ready-to-run notebooks for every GPU step live in [`colab/`](colab/) — they mount Drive, clone this repo, and persist their **outputs** (checkpoints, manifest, priors, exports) to the shared project Drive folder ([view-only](https://drive.google.com/drive/folders/1y1hDjkfHsazsOoe4LJjWKoEKj2bHKKjd)). The raw Nutrition5k dataset stages to the VM's local disk instead — Drive's FUSE mount aborts (`Errno 103`) on the thousands of per-dish RGB-D reads.
 
 ## Cloud (H100) run order
 
