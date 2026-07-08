@@ -62,17 +62,26 @@ def main() -> None:
 
     metric = evaluate.load("mean_iou")
 
+    def preprocess_logits_for_metrics(logits, labels):
+        # Collapse (B, C, h, w) → (B, h, w) by arg-maxing on-device BEFORE the
+        # Trainer accumulates predictions across the whole val set. Without
+        # this the run holds every logit (104 channels × 2,140 images) in RAM
+        # and OOMs during the FIRST epoch's eval — which runs just before the
+        # first checkpoint save, so nothing is ever written (OUT stays empty).
+        return logits.argmax(dim=1)
+
     @torch.no_grad()
     def compute_metrics(eval_pred):
-        logits, labels = eval_pred
-        logits = torch.from_numpy(logits)
-        # Logits come out at 1/4 resolution; upsample to the label size.
-        upsampled = torch.nn.functional.interpolate(
-            logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
-        )
-        predictions = upsampled.argmax(dim=1).numpy()
+        preds, labels = eval_pred  # preds: (B, h, w) at model output resolution
+        # Upsample the small integer prediction map (nearest) to label size —
+        # cheap, and it never materializes the per-class logit volume.
+        preds = torch.nn.functional.interpolate(
+            torch.from_numpy(preds).unsqueeze(1).float(),
+            size=labels.shape[-2:],
+            mode="nearest",
+        ).squeeze(1).long().numpy()
         result = metric.compute(
-            predictions=predictions,
+            predictions=preds,
             references=labels,
             num_labels=NUM_LABELS,
             ignore_index=255,
@@ -108,6 +117,7 @@ def main() -> None:
         train_dataset=train_ds,
         eval_dataset=val_ds,
         compute_metrics=compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
     trainer.train()
     trainer.save_model(args.output)
