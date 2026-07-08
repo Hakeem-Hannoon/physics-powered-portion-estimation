@@ -60,7 +60,7 @@ Every result ships with a propagated error estimate and stays user-editable — 
 
 ## The math
 
-Full derivations with every symbol defined: [`docs/MATH.md`](docs/MATH.md). The spine of it:
+Full derivations with every symbol defined: [`docs/MATH.md`](docs/MATH.md) — or learn the whole project from the ground up (the math, the code, the models, and the CS behind them) in the [**`docs/vault/`** Obsidian vault](docs/vault/Home.md), a linked set of teaching notes starting at [Home](docs/vault/Home.md) and [Beginner Guide](docs/vault/Beginner%20Guide.md). The spine of it:
 
 **1. Metric world coordinates from the IMU** (§1). Cameras alone recover geometry up to an unknown scale; the accelerometer measures true m/s², and the visual-inertial optimizer pins the scale by reconciling integrated IMU displacement with visually-tracked displacement. Result: ARKit distances are in meters on every supported phone.
 
