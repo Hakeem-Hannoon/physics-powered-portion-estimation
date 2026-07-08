@@ -169,6 +169,8 @@ Everything else — ETL, exports, priors, all 27 tests — runs on a laptop.
 
 ## Roadmap
 
+Live status — what's done, in progress, and next — is tracked in **[`docs/STATUS.md`](docs/STATUS.md)**. The milestones:
+
 - **P0 — ruler validation.** Build `apps/demo` on a device, run the tape-measure drill, record results above.
 - **P1 — physics before ML.** Kitchen-scale drill with placeholder segmentation: proves the geometry pipeline on real food.
 - **P2 — models in.** SAM 2.1 tiny + MobileCLIP zero-shot wired as adapters; SegFormer fine-tune replaces the placeholder.
