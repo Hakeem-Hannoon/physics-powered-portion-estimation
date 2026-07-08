@@ -13,7 +13,8 @@ Run in order on a GPU runtime (H100/A100). Each notebook mounts Drive, clones th
 
 Notes:
 
+- **Everything persists to Drive, nothing touches a Google Cloud account.** The Nutrition5k download streams from the public bucket over plain HTTPS (no gcloud, no project, no auth), and the Hugging Face / torch caches (`hf-cache/`, `torch-cache/`) live under `DRIVE_ROOT` too — datasets, pretrained backbones, and checkpoints all survive VM recycling.
 - Set `DRIVE_ROOT` in the first cell of each notebook to the mounted path of the project folder in your Drive.
 - The notebooks clone the repo over public HTTPS. A private repo needs a token: `git clone https://<TOKEN>@github.com/Hakeem-Hannoon/physics-powered-portion-estimation.git`.
-- 02 and 03 checkpoint to Drive every epoch — rerunning after a disconnect resumes.
+- 01 and the training notebooks are all resumable — rerun after a disconnect and they skip or resume what's already in Drive.
 - When 02/03 finish, paste the printed result rows into the root README's **Testing set & results** table.
