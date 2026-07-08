@@ -56,6 +56,9 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     const val EXTRA_MIN_STROKE_M = "minStrokeLengthM"
     private const val CAMERA_PERMISSION_CODE = 41
     private const val MIN_COMMIT_LENGTH_M = 0.005f
+
+    /** Beyond this, raycast + pixel resolution degrade; meals are shot < 1 m. */
+    private const val FAR_WARN_M = 1.5f
   }
 
   private class Stroke(val p1: FloatArray, val p2: FloatArray, val kind: String) {
@@ -84,6 +87,10 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   private var activeStart: FloatArray? = null
   private var activeEnd: FloatArray? = null
   private var reticlePoint: FloatArray? = null
+  private var reticleDistanceM: Float? = null
+  private var activeOffTarget = false
+  private var activeFar = false
+  private var funnyShown = false
   private var lockedPlane: Plane? = null
   private var fallbackNormal: FloatArray? = null
   private var fallbackPoint: FloatArray? = null
@@ -274,12 +281,19 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
     val hit = bestHit(frame, w / 2f, h / 2f)
     reticlePoint = hit?.hitPose?.translation
+    reticleDistanceM = reticlePoint?.let { dist(it, camera.pose.translation) }
 
     if (measureHeld) {
       val point = reticlePoint
       if (activeStart == null) {
         if (point != null && hit != null) {
           rememberPlane(hit)
+          // Wall or ceiling anchor: definitely off-mission, never a table at
+          // a bad angle (those detect as horizontal-upward or fail entirely).
+          val anchorPlane = hit.trackable as? Plane
+          activeOffTarget = anchorPlane != null &&
+            anchorPlane.type != Plane.Type.HORIZONTAL_UPWARD_FACING
+          activeFar = (reticleDistanceM ?: 0f) > FAR_WARN_M
           activeStart = point
           activeEnd = point
         } else {
@@ -303,7 +317,16 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
           val direction = normalized(sub(end, start))
           val vertical = abs(dot(direction, planeNormal())) > 0.7f
           strokes.add(Stroke(start, end, if (vertical) "vertical" else "horizontal"))
-          postLabel(formatMeters(length))
+          val far = activeFar || (reticleDistanceM ?: 0f) > FAR_WARN_M
+          val note = when {
+            activeOffTarget && !funnyShown -> {
+              funnyShown = true
+              " — not what this is for, but fine :)"
+            }
+            far -> " (measured far away — accuracy drops out here)"
+            else -> ""
+          }
+          postLabel(formatMeters(length) + note)
         }
       }
     }
@@ -390,10 +413,13 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     }
 
     // Live coaching: the hint always states the next action.
+    val reticleDist = reticleDistanceM
     postHint(
       when {
         !tracking -> "Move the phone slowly so tracking can start…"
         measureHeld || activeStart != null -> "Sweep to the end point, then let go of the plate"
+        reticleDist != null && reticleDist > FAR_WARN_M ->
+          "That's ${formatMeters(reticleDist)} away — too far to read well, move closer"
         ready && lockedPlane == null ->
           "Ready — sweeping the table into view sharpens portion accuracy"
         ready -> "Add a height measurement up the food, or shoot"
