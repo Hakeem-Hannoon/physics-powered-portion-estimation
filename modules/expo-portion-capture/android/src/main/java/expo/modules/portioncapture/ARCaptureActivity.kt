@@ -8,8 +8,10 @@ import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.ImageFormat
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.os.SystemClock
 import android.media.Image
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
@@ -35,6 +37,7 @@ import java.util.UUID
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -59,6 +62,9 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
     /** Beyond this, raycast + pixel resolution degrade; meals are shot < 1 m. */
     private const val FAR_WARN_M = 1.5f
+
+    /** Finger-to-reticle amplification for the plate trackpad. */
+    private const val PAD_GAIN = 2.2f
   }
 
   private class Stroke(val p1: FloatArray, val p2: FloatArray, val kind: String) {
@@ -88,6 +94,12 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   private var activeEnd: FloatArray? = null
   private var reticlePoint: FloatArray? = null
   private var reticleDistanceM: Float? = null
+  private var reticleX = 0f
+  private var reticleY = 0f
+
+  // Plate-trackpad steering (UI thread writes, GL thread reads).
+  @Volatile private var padDx = 0f
+  @Volatile private var padDy = 0f
   private var activeOffTarget = false
   private var activeFar = false
   private var funnyShown = false
@@ -279,7 +291,10 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     val h = glView.height
     if (w == 0 || h == 0) return
 
-    val hit = bestHit(frame, w / 2f, h / 2f)
+    // The plate trackpad steers the reticle, so the phone stays steady.
+    reticleX = w / 2f + (padDx * PAD_GAIN).coerceIn(-w * 0.42f, w * 0.42f)
+    reticleY = h / 2f + (padDy * PAD_GAIN).coerceIn(-h * 0.42f, h * 0.42f)
+    val hit = bestHit(frame, reticleX, reticleY)
     reticlePoint = hit?.hitPose?.translation
     reticleDistanceM = reticlePoint?.let { dist(it, camera.pose.translation) }
 
@@ -312,7 +327,7 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       if (end != null) {
         val length = dist(start, end)
         if (length < MIN_COMMIT_LENGTH_M) {
-          postLabel("Too short — sweep further while holding the plate")
+          postLabel("Too short — slide your finger further while holding the plate")
         } else {
           val direction = normalized(sub(end, start))
           val vertical = abs(dot(direction, planeNormal())) > 0.7f
@@ -402,7 +417,12 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
         }
       }
     }
-    rulerOverlay.publish(segments, reticleLocked = tracking && reticlePoint != null)
+    rulerOverlay.publish(
+      segments,
+      reticleLocked = tracking && reticlePoint != null,
+      reticleX = reticleX,
+      reticleY = reticleY,
+    )
 
     val ready = !requireStroke ||
       strokes.any { it.kind == "horizontal" && it.lengthM >= minStrokeLengthM }
@@ -417,14 +437,17 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     postHint(
       when {
         !tracking -> "Move the phone slowly so tracking can start…"
-        measureHeld || activeStart != null -> "Sweep to the end point, then let go of the plate"
+        measureHeld || activeStart != null ->
+          "Hold the phone steady — slide your finger to sweep, release to set"
         reticleDist != null && reticleDist > FAR_WARN_M ->
           "That's ${formatMeters(reticleDist)} away — too far to read well, move closer"
         ready && lockedPlane == null ->
           "Ready — sweeping the table into view sharpens portion accuracy"
         ready -> "Add a height measurement up the food, or shoot"
-        reticlePoint == null -> "Point the circle at the food or table…"
-        else -> "Hold the plate, sweep ≥ ${(minStrokeLengthM * 100).toInt()} cm, release"
+        reticlePoint == null -> "Point the sparkle at the food or table…"
+        else ->
+          "Hold the phone steady; hold the plate and slide your finger " +
+            "≥ ${(minStrokeLengthM * 100).toInt()} cm across the food"
       }
     )
   }
@@ -575,7 +598,21 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       textSize = 13f
       gravity = Gravity.CENTER
     }
-    plateButton = PlateButton(this) { held -> measureHeld = held }
+    plateButton = PlateButton(
+      this,
+      onHoldChange = { held ->
+        measureHeld = held
+        if (!held) {
+          // Reticle recenters after each stroke for a predictable next aim.
+          padDx = 0f
+          padDy = 0f
+        }
+      },
+      onDrag = { dx, dy ->
+        padDx = dx
+        padDy = dy
+      },
+    )
     shutterButton = Button(this).apply {
       text = "●"
       textSize = 24f
@@ -618,8 +655,8 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       addView(hintLabel, params(Gravity.TOP or Gravity.CENTER_HORIZONTAL, marginTop = 80))
       addView(
         plateButton,
-        FrameLayout.LayoutParams(dp(92), dp(92), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-          .apply { bottomMargin = dp(28) },
+        FrameLayout.LayoutParams(dp(148), dp(148), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+          .apply { bottomMargin = dp(20) },
       )
       addView(shutterButton, params(Gravity.BOTTOM or Gravity.END, marginBottom = 44))
       addView(undoButton, params(Gravity.BOTTOM or Gravity.START, marginBottom = 44))
@@ -629,9 +666,10 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 }
 
 /**
- * 2D overlay: the center reticle plus strokes projected to screen space each
- * frame. The reticle ring is solid yellow when locked onto a surface and
- * dashed gray while searching.
+ * 2D overlay: the steerable reticle plus strokes projected to screen space
+ * each frame. The reticle is an AI sparkle — a four-point star with two
+ * softly pulsing glitter specks — inside a target ring: solid yellow when
+ * locked onto a surface, dashed while searching.
  */
 class RulerOverlay(context: Activity) : View(context) {
   class Segment(
@@ -641,6 +679,8 @@ class RulerOverlay(context: Activity) : View(context) {
 
   @Volatile private var segments: List<Segment> = emptyList()
   @Volatile private var reticleLocked = false
+  @Volatile private var reticleX = -1f
+  @Volatile private var reticleY = -1f
 
   private val density = context.resources.displayMetrics.density
 
@@ -666,11 +706,21 @@ class RulerOverlay(context: Activity) : View(context) {
     strokeWidth = 2f * density
     pathEffect = DashPathEffect(floatArrayOf(6f * density, 5f * density), 0f)
   }
-  private val reticleDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+  private val sparklePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    setShadowLayer(4f, 0f, 0f, Color.BLACK)
+  }
+  private val sparklePath = Path()
 
-  fun publish(nextSegments: List<Segment>, reticleLocked: Boolean) {
+  fun publish(
+    nextSegments: List<Segment>,
+    reticleLocked: Boolean,
+    reticleX: Float,
+    reticleY: Float,
+  ) {
     segments = nextSegments
     this.reticleLocked = reticleLocked
+    this.reticleX = reticleX
+    this.reticleY = reticleY
     postInvalidateOnAnimation()
   }
 
@@ -688,18 +738,38 @@ class RulerOverlay(context: Activity) : View(context) {
       )
     }
 
-    // The center reticle: where the next anchor lands.
-    val cx = width / 2f
-    val cy = height / 2f
-    val r = 24f * density
-    if (reticleLocked) {
-      canvas.drawCircle(cx, cy, r, reticleLockedPaint)
-      reticleDot.color = Color.YELLOW
-    } else {
-      canvas.drawCircle(cx, cy, r, reticleSearchPaint)
-      reticleDot.color = 0xB3FFFFFF.toInt()
-    }
-    canvas.drawCircle(cx, cy, 3f * density, reticleDot)
+    // The reticle: where the next anchor lands (steered by the plate).
+    val cx = if (reticleX >= 0f) reticleX else width / 2f
+    val cy = if (reticleY >= 0f) reticleY else height / 2f
+    val r = 26f * density
+    canvas.drawCircle(cx, cy, r, if (reticleLocked) reticleLockedPaint else reticleSearchPaint)
+
+    // The AI sparkle + two glitter specks, gently breathing out of phase.
+    val color = if (reticleLocked) Color.YELLOW else 0xE6FFFFFF.toInt()
+    val t = SystemClock.uptimeMillis()
+    drawSparkle(canvas, cx, cy, r * 0.46f, color, 255)
+    drawSparkle(
+      canvas, cx + r * 0.58f, cy - r * 0.52f, r * 0.17f, color,
+      (170 + 85 * sin(t / 240.0)).toInt().coerceIn(60, 255),
+    )
+    drawSparkle(
+      canvas, cx - r * 0.62f, cy + r * 0.44f, r * 0.12f, color,
+      (170 + 85 * sin(t / 240.0 + 2.2)).toInt().coerceIn(60, 255),
+    )
+  }
+
+  /** The four-point AI star: quadratic curves pinched through the center. */
+  private fun drawSparkle(canvas: Canvas, x: Float, y: Float, r: Float, color: Int, alpha: Int) {
+    sparklePaint.color = color
+    sparklePaint.alpha = alpha
+    sparklePath.reset()
+    sparklePath.moveTo(x, y - r)
+    sparklePath.quadTo(x, y, x + r, y)
+    sparklePath.quadTo(x, y, x, y + r)
+    sparklePath.quadTo(x, y, x - r, y)
+    sparklePath.quadTo(x, y, x, y - r)
+    sparklePath.close()
+    canvas.drawPath(sparklePath, sparklePaint)
   }
 }
 

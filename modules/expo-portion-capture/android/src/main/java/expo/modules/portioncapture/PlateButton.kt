@@ -11,18 +11,24 @@ import android.view.MotionEvent
 import android.view.View
 
 /**
- * The measure trigger, drawn as a 45 lb gym plate viewed face-on: rubber
- * disc, groove rings, center hub with a barbell hole, and the classic "45"
- * stamp. Hold it down to measure; it depresses slightly and rims in yellow
- * (matching the ruler) while held.
+ * The measure trigger AND thumb-trackpad, drawn as a 45 lb gym plate viewed
+ * face-on: rubber disc, groove rings, center hub with a barbell hole, and the
+ * classic "45" stamp.
+ *
+ * Hold it to start measuring; slide the finger (it may leave the plate — the
+ * gesture stays captured) to drive the reticle while the phone stays steady;
+ * release to commit. Reports the drag as a delta from the touch-down point.
  */
 @SuppressLint("ViewConstructor")
 class PlateButton(
   context: Context,
   private val onHoldChange: (held: Boolean) -> Unit,
+  private val onDrag: (dx: Float, dy: Float) -> Unit,
 ) : View(context) {
 
   private var held = false
+  private var downX = 0f
+  private var downY = 0f
 
   private val disc = Paint(Paint.ANTI_ALIAS_FLAG)
   private val groove = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -46,14 +52,14 @@ class PlateButton(
   }
 
   init {
-    contentDescription = "Hold to measure"
+    contentDescription = "Hold and slide to measure"
     isHapticFeedbackEnabled = true
   }
 
   override fun onDraw(canvas: Canvas) {
     val cx = width / 2f
     val cy = height / 2f
-    val r = (minOf(width, height) / 2f) * if (held) 0.93f else 1f
+    val r = (minOf(width, height) / 2f) * if (held) 0.94f else 1f
 
     // Rubber disc with a soft top-left sheen.
     disc.shader = RadialGradient(
@@ -86,7 +92,14 @@ class PlateButton(
   @SuppressLint("ClickableViewAccessibility")
   override fun onTouchEvent(event: MotionEvent): Boolean {
     when (event.actionMasked) {
-      MotionEvent.ACTION_DOWN -> setHeld(true)
+      MotionEvent.ACTION_DOWN -> {
+        downX = event.x
+        downY = event.y
+        setHeld(true)
+      }
+      MotionEvent.ACTION_MOVE -> {
+        if (held) onDrag(event.x - downX, event.y - downY)
+      }
       MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> setHeld(false)
     }
     return true
