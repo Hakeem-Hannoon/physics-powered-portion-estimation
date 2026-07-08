@@ -36,7 +36,7 @@ Be the portion‑estimation engine for **Spotter** meal logging, and stand alone
 3. **Real model adapters** — replace the mocks: `Segmenter` (SAM 2.1‑tiny Core ML / SegFormer via ExecuTorch), `Classifier` (MobileCLIP zero‑shot), `DepthProvider` (LiDAR). De‑risk the Android ExecuTorch custom‑model path first. → [[Segmentation Model]]
 4. **On‑device nutrient bundle** — run the ETL over real FDC CSVs, ship the SQLite as an asset, implement `NutrientStore` over expo‑sqlite, and curate the **label → FDC‑row** mapping (the quality‑critical artifact). → [[Nutrition Database]]
 5. **Core ML / ExecuTorch export + inference wiring** — notebook 04 exports; wire and benchmark on‑device. → [[Training Pipeline]]
-6. **Confirm/edit UI** — adjust the outline, swap the label, tweak portions before logging.
+6. **Confirm/edit UI** — adjust the outline, swap the label, tweak portions before logging. *(The deterministic core is done: `rescaleItemToMass` / `relabelItem` / `withEditedItem` in `@ppe/pipeline` — [[The Pipeline]] → "Editing an estimate". What remains is the app-side UI.)*
 7. **Spotter integration** — add the module + `@ppe/*` to Spotter's app; "Scan meal" entry; map results into the logging flow; Pro‑gate; fall back to the cloud path on unsupported devices.
 8. **P3/P4** — the regressor in the loop, A/B vs. geometry, fill the benchmark tables. → [[Testing]]
 

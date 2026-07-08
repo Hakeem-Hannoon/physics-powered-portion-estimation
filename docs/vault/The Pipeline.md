@@ -80,8 +80,19 @@ ATWATER_TOLERANCE = 0.15  // >15% deviation → atwater_mismatch flag
 
 `DEFAULT_KAPPA = 0.55` is the single most important placeholder in the codebase — it's replaced by the fitted value from [[Shape Priors and Nutrition5k]] as the top of [[Roadmap and Next Steps]].
 
+## Editing an estimate (propose → confirm)
+
+The system *proposes*; the user *confirms* — and usually tweaks a portion or a label first ([[ARCHITECTURE]] §2). `edit.ts` provides pure helpers for that, so an edited item is as testable as the original estimate:
+
+- **`rescaleItemToMass(item, grams)`** — the portion slider. Nutrition is linear in mass ([[Math 4 - Volume Mass and Nutrients]] §6), so this is an exact proportional rescale of kcal/macros/micros; the *measured* geometry is kept (the user is correcting the mass, not the measurement). An unmatched item just gets its mass set (nutrition stays null). Adds `portion_edited`.
+- **`relabelItem(item, record | null, label?)`** — swap the food. Re-derives mass and nutrition from a new `FoodRecord` (from a [[Nutrition Database]] `lookup`) applied to the item's measured volume — renaming changes density and nutrition, not the volume on the plate. `record: null` → null nutrition + `no_db_match` (never invented). Confidence becomes 1 (user-chosen); clears stale `no_db_match`/`low_confidence`/`atwater_mismatch`; re-runs the Atwater check.
+- **`recomputeTotals(items)`** — re-sum meal totals (same rounding as `estimateMeal`).
+- **`withEditedItem(result, i, newItem)`** — replace an item, recompute totals, and **re-validate the whole result against the output contract** — so an edit can never yield an invalid `EstimateResult`. Compose: `withEditedItem(r, i, rescaleItemToMass(r.items[i], grams))`.
+
+These reuse `@ppe/geometry`'s `massG`/`nutrientsForMassG`/`atwaterDeviation`, so an edit follows the exact same math as the original estimate. Tested in [[Testing]] (11 cases).
+
 ## The two contract rules (why they matter)
-- **Never invent nutrition.** No DB match → null nutrients + `no_db_match`, but volume still reported. Tested directly ([[Testing]], "refuses to invent nutrition").
+- **Never invent nutrition.** No DB match → null nutrients + `no_db_match`, but volume still reported. Tested directly ([[Testing]], "refuses to invent nutrition"). The edit helpers preserve this — `relabelItem(item, null)` yields null nutrition, never a guess.
 - **Never false precision.** `est_relative_error` rides in `quality` so the UI shows ranges, not fake decimals.
 
 ## Related

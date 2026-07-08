@@ -21,7 +21,7 @@ npm run typecheck  # tsc --noEmit across @ppe/geometry and @ppe/pipeline
 
 **CI** (`.github/workflows/ci.yml`): on every push to `main` and every pull request → Node 22 → `npm ci` → `npm run typecheck` → `npm test`. There is **no** native (Android/iOS) build in CI yet (it's backlog). Node ≥ 22.5 is required because the ETL uses built‑in `node:sqlite`.
 
-**27 tests, three suites, all green:**
+**46 tests, five suites, all green:**
 
 ### geometry — 20 synthetic‑scene tests (`packages/geometry/test/geometry.test.ts`)
 The crown jewel: it treats [[MATH]] as executable spec. It builds synthetic cameras + a table plane with **known ground truth** and asserts the geometry recovers it to ~**1e‑9**. Every group cites its MATH.md section:
@@ -42,8 +42,14 @@ Runs `estimateMeal` over a synthetic nadir capture with **mocked models but real
 
 Both contract edges are covered: input by test 4, output by `estimateResultSchema.parse` running under tests 1–3.
 
-### nutrition — 3 ETL tests (`nutrition/test/etl.test.ts`)
-Builds a bundle from CSV fixtures and checks: branded foods are filtered out (2 of 3 kept); rice's density derives to **0.668 g/mL** from its cup portion and is tagged `fdc_portion` (banana's "medium" portion yields null); and full‑text search finds rice by name.
+### pipeline — 11 edit‑helper tests (`packages/pipeline/test/edit.test.ts`)
+The propose→confirm helpers ([[The Pipeline]] → "Editing an estimate"): `rescaleItemToMass` scales nutrition linearly and keeps the geometry (only sets the mass on an unmatched item); `relabelItem` re‑derives mass+nutrition from a new `FoodRecord` on the measured volume, sets confidence to 1, clears stale flags, re‑runs Atwater, and yields null nutrition on `record: null`; `recomputeTotals` sums (null items as zero); `withEditedItem` recomputes totals and **re‑validates against the output schema** (a bad edit throws `ZodError`).
+
+### nutrition — 5 ETL tests (`nutrition/test/etl.test.ts`)
+Builds a bundle from CSV fixtures and checks: branded foods are filtered out (2 of 3 kept); rice's density derives to **0.668 g/mL** from its cup portion, tagged `fdc_portion` (banana's "medium" portion yields null); full‑text search finds rice by name; and the `shape_priors` table is seeded with a default `_global` mound (matching the pipeline placeholder) or ingested from a `priors.json`.
+
+### nutrition — 6 store tests (`nutrition/test/nutrient-store.test.ts`)
+The reference `NutrientStore` ([[Nutrition Database]]): resolves a label to a `FoodRecord` by exact / full‑text / alias, falls back to water density when FDC has no volumetric portion, returns `null` on a miss (never invents), and — the data‑path proof — feeds the store's rice record through the pipeline's exact mass→nutrition arithmetic (200 mL → 133.6 g → 173.6 kcal).
 
 ### The monorepo (context for the suite)
 npm workspaces `packages/*` + `nutrition`; ESM throughout. `@ppe/pipeline` → `@ppe/geometry` resolves **straight to TypeScript source** (no `dist`). Config is plain tsconfig **inheritance** (a strict `tsconfig.base.json`), *not* TS project references. `@ppe/nutrition-etl` is plain `.mjs` (not typechecked).
