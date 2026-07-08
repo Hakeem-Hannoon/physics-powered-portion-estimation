@@ -36,6 +36,20 @@ CAPTURE (native AR, geometry only)                  INFERENCE (on-device)
 
 The capture gesture: aim the sparkle reticle at the food, hold the plate button to anchor a 3D point (a raycast against tracked geometry), slide your thumb on the plate to sweep the reticle — the phone stays steady — and release to commit the stroke with a live cm readout. Horizontal strokes calibrate scale; a vertical stroke up the food measures its height. The shutter then freezes the frame together with everything the math needs: intrinsics, camera pose, plane equation, strokes, and the depth map when the hardware has one.
 
+### In action
+
+<p>
+  <img src="docs/images/capture-idle.png" width="24%" alt="AR capture screen: sparkle reticle searching, plate button, intro hint" />
+  <img src="docs/images/capture-measuring.png" width="24%" alt="Holding the plate: ruler stretching across the food with a live cm readout" />
+  <img src="docs/images/capture-stroke.png" width="24%" alt="Committed stroke with its length label; shutter enabled" />
+  <img src="docs/images/estimate-card.png" width="24%" alt="Estimate card: area, volume, grams, kcal, and the quality block" />
+</p>
+
+1. `capture-idle.png` — the capture screen: sparkle reticle (dashed = searching), the 45 lb plate trigger, the hold-steady intro hint.
+2. `capture-measuring.png` — plate held, thumb sliding: the yellow ruler stretches with a live cm readout.
+3. `capture-stroke.png` — released: the committed stroke with its label, shutter brightened.
+4. `estimate-card.png` — back in the app: measured area/volume, grams, kcal/macros, ruler residual and the ± error band.
+
 **Capture technique** — it's physics, so technique matters:
 
 - **Hold the phone steady.** The plate trackpad does the sweeping, so your hands can stay parked. Every anchor is shake-gated and median-filtered over multiple frames ([`docs/MATH.md`](docs/MATH.md) §2.4); steadier frames mean tighter medians.
