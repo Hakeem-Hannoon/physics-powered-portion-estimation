@@ -6,11 +6,12 @@ node_modules/
 .expo/
 dist/
 *.tsbuildinfo
-ios/build/
-ios/Pods/
-android/build/
-android/.gradle/
-android/app/build/
+**/ios/build/
+**/ios/Pods/
+**/android/build/
+**/android/.gradle/
+**/android/app/build/
+**/android/local.properties
 
 # Demo app: native projects are generated from app.json (expo prebuild / CNG)
 apps/demo/android/
