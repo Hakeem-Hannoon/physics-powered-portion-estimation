@@ -24,6 +24,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Camera
+import com.google.ar.core.CameraConfig
+import com.google.ar.core.CameraConfigFilter
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
@@ -34,6 +36,8 @@ import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -76,6 +80,24 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     private const val SHAKE_LINEAR_M_S = 1.0f
     private const val SHAKE_ANGULAR_RAD_S = 1.5f
     private const val PLANE_SNAP_M = 0.008f
+
+    // Motion-blur shutter gate (CAPTURE_QUALITY.md R6). Tracking-normal says VIO
+    // is healthy, not that the frozen frame is sharp: ~10°/s of hand drift at
+    // 1/30 s smears ~9 px. These thresholds are far tighter than the measuring
+    // gate above — a still needs the phone genuinely still — but we only DELAY a
+    // photo by a few frames (never starve a buffer), so strict is safe here.
+    private const val SHOOT_LINEAR_M_S = 0.30f
+    private const val SHOOT_ANGULAR_RAD_S = 0.30f
+    /** Wait at most this long for a calm frame before shooting anyway. */
+    private const val SHOOT_GRACE_MS = 350L
+
+    /** Below this ambient pixel intensity (~0–1), low light hurts accuracy. */
+    private const val DARK_PIXEL_INTENSITY = 0.25f
+    /** Beyond this camera-axis-vs-plane-normal angle, coach a more top-down shot. */
+    private const val TILT_WARN_DEG = 45f
+    /** DEPTH16 low 13 bits hold millimeters; masking is range-safe below 8.19 m
+     *  (every meal is well inside it), sidestepping the confidence-bit ambiguity. */
+    private const val DEPTH16_MM_MASK = 0x1FFF
   }
 
   private class Stroke(val p1: FloatArray, val p2: FloatArray, val kind: String) {
@@ -88,6 +110,7 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   private lateinit var hintLabel: TextView
   private lateinit var shutterButton: Button
   private lateinit var undoButton: Button
+  private lateinit var torchButton: Button
   private lateinit var plateButton: PlateButton
   private lateinit var rotationHelper: DisplayRotationHelper
   private val background = BackgroundRenderer()
@@ -116,6 +139,13 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   private val steadySamples = ArrayDeque<FloatArray>()
   private var prevPose: Pose? = null
   private var prevTimestampNs = 0L
+  // Latest pose-delta speeds (GL thread) — reused by the blur gate (R6) and the
+  // capture_quality telemetry (R8); written every frame in isShaky().
+  private var lastLinearMS = 0f
+  private var lastAngularRadS = 0f
+  // Per-frame capture-quality signals (GL thread write, telemetry/coaching read).
+  private var viewAngleDeg = 90f
+  @Volatile private var lightPixelIntensity = -1f
   private var introUntilMs = 0L
   private var activeOffTarget = false
   private var activeFar = false
@@ -127,6 +157,8 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
   // UI-thread → GL-thread signals
   @Volatile private var measureHeld = false
   @Volatile private var captureRequested = false
+  @Volatile private var captureRequestedAtMs = 0L
+  @Volatile private var torchOn = false
   @Volatile private var undoRequested = false
   @Volatile private var shutterReady = false
   private var delivered = false
@@ -212,20 +244,8 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
         }
         ArCoreApk.InstallStatus.INSTALLED -> {
           val created = Session(this)
-          created.configure(
-            Config(created).apply {
-              // Planes in any orientation, plus depth where the hardware
-              // provides it — the ruler is free to hit any surface.
-              planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-              updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-              focusMode = Config.FocusMode.AUTO
-              depthMode = if (created.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                Config.DepthMode.AUTOMATIC
-              } else {
-                Config.DepthMode.DISABLED
-              }
-            }
-          )
+          selectHighResCameraConfig(created)
+          applyConfig(created)
           session = created
           true
         }
@@ -234,6 +254,66 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       finishWith(null, "ARCore unavailable: ${e.message}")
       false
     }
+  }
+
+  /**
+   * Pick the largest-area CPU image config (CAPTURE_QUALITY.md R1). ARCore's
+   * default CPU stream is 640×480 on many devices — the GL preview looks sharp,
+   * which hides that `acquireCameraImage()`, the stored JPEG, and every
+   * pixel→meter conversion inherit 0.3 MP. `camera.imageIntrinsics` tracks the
+   * chosen size automatically, so the payload stays self-consistent. Tie-break
+   * toward configs that keep the depth sensor usable so R3 isn't disabled.
+   */
+  private fun selectHighResCameraConfig(session: Session) {
+    try {
+      val filter = CameraConfigFilter(session)
+        .setFacingDirection(CameraConfig.FacingDirection.BACK)
+      val configs = session.getSupportedCameraConfigs(filter)
+      val best = configs
+        .sortedWith(
+          compareByDescending<CameraConfig> { it.imageSize.width.toLong() * it.imageSize.height }
+            .thenByDescending { it.depthSensorUsage == CameraConfig.DepthSensorUsage.REQUIRE_AND_USE }
+        )
+        .firstOrNull()
+      if (best != null) session.cameraConfig = best
+    } catch (e: Exception) {
+      // Keep ARCore's default config; capture still works, just lower-res.
+    }
+  }
+
+  /**
+   * (Re)apply the session config. Extracted so the torch toggle (R7) can flip
+   * `flashMode` and reconfigure without rebuilding the session. Ambient light
+   * estimation feeds the low-light coaching + telemetry (R7/R8).
+   */
+  private fun applyConfig(session: Session) {
+    session.configure(
+      Config(session).apply {
+        // Planes in any orientation, plus depth where the hardware provides it —
+        // the ruler is free to hit any surface.
+        planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+        updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+        focusMode = Config.FocusMode.AUTO
+        lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
+        depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+          Config.DepthMode.AUTOMATIC
+        } else {
+          Config.DepthMode.DISABLED
+        }
+        flashMode = if (torchOn) Config.FlashMode.TORCH else Config.FlashMode.OFF
+      }
+    )
+  }
+
+  private fun toggleTorch() {
+    val session = session ?: return
+    torchOn = !torchOn
+    try {
+      applyConfig(session)
+    } catch (e: Exception) {
+      torchOn = false // device without a controllable flash — TORCH is a no-op
+    }
+    runOnUiThread { torchButton.text = if (torchOn) "Torch ●" else "Torch ○" }
   }
 
   private fun finishWith(payload: HashMap<String, Any?>?, message: String?) {
@@ -279,24 +359,44 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       undoRequested = false
       strokes.removeLastOrNull()
     }
+    lightPixelIntensity = try {
+      frame.lightEstimate.takeIf { it.state == com.google.ar.core.LightEstimate.State.VALID }
+        ?.pixelIntensity ?: -1f
+    } catch (e: Exception) {
+      -1f
+    }
+
     updateReticleAndMeasure(frame, camera)
     publishOverlay(camera)
 
-    if (captureRequested && camera.trackingState == TrackingState.TRACKING) {
-      try {
-        val payload = buildPayload(frame, camera)
-        captureRequested = false
-        runOnUiThread { finishWith(payload, null) }
-      } catch (e: NotYetAvailableException) {
-        // CPU image lags the GPU frame occasionally; retry next frame.
-      } catch (e: Exception) {
-        captureRequested = false
-        postLabel("Capture failed: ${e.message}")
+    if (captureRequested) {
+      when {
+        camera.trackingState != TrackingState.TRACKING ->
+          postLabel("Hold steady — tracking is limited")
+        // R6: refuse to freeze a blurred frame while the phone is still moving,
+        // but never trap the user — after the grace window, shoot regardless.
+        isTooShakyToShoot() && !shootGraceExpired() ->
+          postLabel("Steadying the shot — hold still…")
+        else ->
+          try {
+            val payload = buildPayload(frame, camera)
+            captureRequested = false
+            runOnUiThread { finishWith(payload, null) }
+          } catch (e: NotYetAvailableException) {
+            // CPU image lags the GPU frame occasionally; retry next frame.
+          } catch (e: Exception) {
+            captureRequested = false
+            postLabel("Capture failed: ${e.message}")
+          }
       }
-    } else if (captureRequested) {
-      postLabel("Hold steady — tracking is limited")
     }
   }
+
+  private fun isTooShakyToShoot(): Boolean =
+    lastLinearMS > SHOOT_LINEAR_M_S || lastAngularRadS > SHOOT_ANGULAR_RAD_S
+
+  private fun shootGraceExpired(): Boolean =
+    captureRequestedAtMs != 0L && SystemClock.uptimeMillis() - captureRequestedAtMs > SHOOT_GRACE_MS
 
   // MARK: reticle + hold-to-measure (MATH.md §2.3), GL thread
 
@@ -319,6 +419,11 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     val rawPoint = hit?.hitPose?.translation?.let(::snapToSupportPlane)
     reticlePoint = rawPoint
     reticleDistanceM = rawPoint?.let { dist(it, camera.pose.translation) }
+
+    // View obliquity: angle between the camera optical axis (−z) and straight
+    // down the plane normal. 0° = top-down, which the homography + off-plane
+    // math (MATH.md §3, §3.2) both prefer. Feeds R5 coaching + R8 telemetry.
+    viewAngleDeg = angleBetweenDeg(negate(camera.pose.zAxis), negate(planeNormal()))
 
     // Robust endpoint (MATH.md §2.4): shake-gated samples, component-wise
     // median over recent frames. Tremor and the press/lift jolts are
@@ -423,15 +528,24 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     val prevNs = prevTimestampNs
     prevPose = pose
     prevTimestampNs = nowNs
-    if (prev == null || prevNs == 0L || nowNs <= prevNs) return false
+    if (prev == null || prevNs == 0L || nowNs <= prevNs) {
+      lastLinearMS = 0f; lastAngularRadS = 0f // unknown motion ⇒ treat as steady
+      return false
+    }
     val dt = (nowNs - prevNs) / 1e9f
-    if (dt > 0.25f) return false
+    if (dt > 0.25f) {
+      lastLinearMS = 0f; lastAngularRadS = 0f
+      return false
+    }
     val linear = dist(pose.translation, prev.translation) / dt
     val q1 = FloatArray(4).also { prev.getRotationQuaternion(it, 0) }
     val q2 = FloatArray(4).also { pose.getRotationQuaternion(it, 0) }
     val qDot = abs(q1[0] * q2[0] + q1[1] * q2[1] + q1[2] * q2[2] + q1[3] * q2[3])
       .coerceAtMost(1f)
     val angular = 2f * acos(qDot) / dt
+    // Cached for the R6 blur gate and R8 telemetry (both read the latest speeds).
+    lastLinearMS = linear
+    lastAngularRadS = angular
     return linear > SHAKE_LINEAR_M_S || angular > SHAKE_ANGULAR_RAD_S
   }
 
@@ -526,6 +640,10 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
           "Hold the phone steady — slide your finger to sweep, release to set"
         reticleDist != null && reticleDist > FAR_WARN_M ->
           "That's ${formatMeters(reticleDist)} away — too far to read well, move closer"
+        reticlePoint != null && viewAngleDeg > TILT_WARN_DEG ->
+          "Tilt more top-down — shooting flat-on reads portions best"
+        lightPixelIntensity in 0f..DARK_PIXEL_INTENSITY ->
+          "A bit dark — more light (or the torch) sharpens the estimate"
         ready && lockedPlane == null ->
           "Ready — sweeping the table into view sharpens portion accuracy"
         ready -> "Add a height measurement up the food, or shoot"
@@ -604,6 +722,26 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
 
     val horizontalOk = strokes.any { it.kind == "horizontal" && it.lengthM >= minStrokeLengthM }
 
+    // 5. Depth, when the hardware measures it (R3) — no longer dropped. Upgrades
+    //    the scale source to the depth tier (MATH.md §7) and unlocks the §4a
+    //    height-field volume route on ARCore depth devices.
+    val depthDict: HashMap<String, Any?>? =
+      if (session?.config?.depthMode != Config.DepthMode.DISABLED) {
+        try {
+          frame.acquireDepthImage16Bits().use { depth ->
+            writeDepth(depth, directory, intrinsics, width, height)
+          }
+        } catch (e: NotYetAvailableException) {
+          null
+        } catch (e: Exception) {
+          null
+        }
+      } else {
+        null
+      }
+
+    val cameraHeightM = abs(dot(sub(camera.pose.translation, point), n)).coerceAtLeast(1e-4f)
+
     return hashMapOf(
       "version" to 1,
       "image" to "file://${imageFile.absolutePath}",
@@ -627,12 +765,82 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
           "kind" to it.kind,
         )
       },
-      "depth" to null,
+      "depth" to depthDict,
       "tracking" to hashMapOf(
-        "state" to "normal",
+        // R9: report the real tracking state instead of a hardcoded "normal".
+        "state" to trackingStateName(camera.trackingState),
         "plane_source" to if (plane != null) "detected_plane" else "estimated",
       ),
-      "scale_source" to if (horizontalOk) "ruler" else "none",
+      // Depth present ⇒ depth-tier scale (mirrors iOS "lidar"); else the ruler,
+      // else nothing.
+      "scale_source" to when {
+        depthDict != null -> "lidar"
+        horizontalOk -> "ruler"
+        else -> "none"
+      },
+      // R8: capture-condition telemetry (CAPTURE_QUALITY.md). Additive/optional.
+      "capture_quality" to hashMapOf(
+        "light_estimate" to (if (lightPixelIntensity >= 0f) lightPixelIntensity else null),
+        "exposure_duration_s" to null, // ARCore doesn't surface exposure duration
+        "camera_speed_m_s" to lastLinearMS,
+        "camera_speed_rad_s" to lastAngularRadS,
+        "view_angle_deg" to viewAngleDeg,
+        "distance_m" to cameraHeightM,
+      ),
+    )
+  }
+
+  private fun trackingStateName(state: TrackingState): String = when (state) {
+    TrackingState.TRACKING -> "normal"
+    TrackingState.PAUSED -> "limited"
+    TrackingState.STOPPED -> "not_available"
+  }
+
+  /**
+   * DEPTH16 image → f32-meters sidecar (little-endian, row-major, tightly
+   * packed), with the RGB intrinsics rescaled to the depth resolution
+   * (MATH.md §9.1) exactly as the iOS module does. Confidence is left null;
+   * per-pixel confidence via the Raw Depth API is a follow-up (R3 note).
+   */
+  private fun writeDepth(
+    depth: Image,
+    directory: File,
+    rgb: com.google.ar.core.CameraIntrinsics,
+    rgbW: Int,
+    rgbH: Int,
+  ): HashMap<String, Any?> {
+    val w = depth.width
+    val h = depth.height
+    val plane = depth.planes[0]
+    val shorts = plane.buffer.order(ByteOrder.nativeOrder()).asShortBuffer()
+    val rowStrideShorts = plane.rowStride / 2
+    val pixelStrideShorts = (plane.pixelStride / 2).coerceAtLeast(1)
+
+    val out = ByteBuffer.allocate(w * h * 4).order(ByteOrder.LITTLE_ENDIAN)
+    for (row in 0 until h) {
+      var idx = row * rowStrideShorts
+      for (col in 0 until w) {
+        val mm = shorts.get(idx).toInt() and DEPTH16_MM_MASK
+        out.putFloat(mm / 1000f)
+        idx += pixelStrideShorts
+      }
+    }
+    val depthFile = File(directory, "depth.f32")
+    depthFile.writeBytes(out.array())
+
+    val f = rgb.focalLength
+    val c = rgb.principalPoint
+    val sx = w.toFloat() / rgbW
+    val sy = h.toFloat() / rgbH
+    return hashMapOf(
+      "map" to "file://${depthFile.absolutePath}",
+      "confidence" to null,
+      "size" to listOf(w, h),
+      "intrinsics" to listOf(
+        listOf(f[0] * sx, 0f, c[0] * sx),
+        listOf(0f, f[1] * sy, c[1] * sy),
+        listOf(0f, 0f, 1f),
+      ),
     )
   }
 
@@ -705,6 +913,7 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       // Always clickable: a dimmed shutter explains itself when tapped.
       setOnClickListener {
         if (shutterReady) {
+          captureRequestedAtMs = SystemClock.uptimeMillis() // R6 grace-window start
           captureRequested = true
         } else {
           measureLabel.text =
@@ -715,6 +924,10 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
     undoButton = Button(this).apply {
       text = "Undo"
       setOnClickListener { undoRequested = true }
+    }
+    torchButton = Button(this).apply {
+      text = "Torch ○"
+      setOnClickListener { toggleTorch() }
     }
     fun params(gravity: Int, marginBottom: Int = 0, marginTop: Int = 0) =
       FrameLayout.LayoutParams(
@@ -740,6 +953,7 @@ class ARCaptureActivity : Activity(), GLSurfaceView.Renderer {
       )
       addView(shutterButton, params(Gravity.BOTTOM or Gravity.END, marginBottom = 44))
       addView(undoButton, params(Gravity.BOTTOM or Gravity.START, marginBottom = 44))
+      addView(torchButton, params(Gravity.TOP or Gravity.END, marginTop = 44))
     }
   }
 }
@@ -867,6 +1081,13 @@ private fun dist(a: FloatArray, b: FloatArray): Float {
 private fun normalized(v: FloatArray): FloatArray {
   val n = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
   return if (n < 1e-9f) floatArrayOf(0f, 1f, 0f) else floatArrayOf(v[0] / n, v[1] / n, v[2] / n)
+}
+
+private fun negate(v: FloatArray) = floatArrayOf(-v[0], -v[1], -v[2])
+
+private fun angleBetweenDeg(a: FloatArray, b: FloatArray): Float {
+  val d = dot(normalized(a), normalized(b)).coerceIn(-1f, 1f)
+  return Math.toDegrees(acos(d).toDouble()).toFloat()
 }
 
 private fun formatMeters(m: Float): String =
