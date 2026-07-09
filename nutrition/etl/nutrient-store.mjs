@@ -67,9 +67,19 @@ function toFoodRecord(row, shape) {
 
 export function openNutrientStore(path, { aliases = {} } = {}) {
   const bundle = openBundle(path);
-  // Foods carry no shape class yet, so every food uses the `_global` prior.
-  // (Roadmap: a per-food class map will select a specific class here.)
-  const shape = shapeFromPrior(bundle.shapePrior?.("_global"));
+  // Per-food shape class (MATH.md §4): each food row carries a `shape_class`;
+  // resolve it to that class's prior, falling back to `_global` when the food has
+  // no class or the class has no row. Cached — the priors table is tiny.
+  const globalShape = shapeFromPrior(bundle.shapePrior?.("_global"));
+  const shapeCache = new Map();
+  const shapeForClass = (cls) => {
+    if (!cls) return globalShape;
+    if (shapeCache.has(cls)) return shapeCache.get(cls);
+    const row = bundle.shapePrior?.(cls) ?? null;
+    const resolved = row ? shapeFromPrior(row) : globalShape;
+    shapeCache.set(cls, resolved);
+    return resolved;
+  };
 
   return {
     async lookup(label) {
@@ -83,7 +93,7 @@ export function openNutrientStore(path, { aliases = {} } = {}) {
         const q = ftsQuery(term);
         row = q ? (bundle.search(q, 1)[0] ?? null) : null; // full-text best hit
       }
-      return row ? toFoodRecord(row, { ...shape }) : null; // null = never invent
+      return row ? toFoodRecord(row, { ...shapeForClass(row.shape_class) }) : null;
     },
     close: () => bundle.close(),
   };

@@ -13,9 +13,9 @@
  * so the on-device schema is identical. Density is portion-derived where a
  * volumetric measure is given (MATH.md §5); omitted nutrients stay null.
  */
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { buildBundle } from "../etl/build-bundle.mjs";
 
@@ -106,9 +106,20 @@ function writeFixtures(dir) {
   );
 }
 
+// Per-food shape class (MATH.md §4): most foods pile into a mound; slices and
+// fillets lie flat. The store resolves each food's class to its own prior.
+const FLAT_FOODS = new Set(["Bread, white, commercial", "Salmon, Atlantic, cooked"]);
+const foodClasses = Object.fromEntries(
+  FOODS.map((f) => [f.desc, FLAT_FOODS.has(f.desc) ? "flat" : "mound"]),
+);
+
 const { values } = parseArgs({ options: { out: { type: "string", default: "apps/demo/assets/nutrients.sqlite" }, priors: { type: "string" } } });
 const dir = mkdtempSync(join(tmpdir(), "ppe-starter-"));
 writeFixtures(dir);
 const priors = values.priors ? JSON.parse(readFileSync(values.priors, "utf8")) : null;
-const stats = buildBundle({ fdcDir: dir, out: values.out, priors });
-console.log(`starter bundle → ${values.out}: ${stats.foods} foods, ${stats.withDensity} with density, ${stats.shapePriors} shape priors, fts=${stats.fts}`);
+const stats = buildBundle({ fdcDir: dir, out: values.out, priors, foodClasses });
+
+// Ship the canonical label→FDC map next to the DB so the demo bundles a local copy.
+copyFileSync(new URL("../label-map.json", import.meta.url), join(dirname(values.out), "label-map.json"));
+
+console.log(`starter bundle → ${values.out}: ${stats.foods} foods, ${stats.withDensity} with density, ${stats.shapePriors} shape priors, fts=${stats.fts}; label-map copied`);

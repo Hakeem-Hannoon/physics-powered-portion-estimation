@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { csvRecords } from "./csv.mjs";
@@ -60,7 +60,27 @@ const DEFAULT_DATA_TYPES = ["foundation_food", "sr_legacy_food", "survey_fndds_f
  */
 const DEFAULT_GLOBAL_PRIOR = { kind: "mound", kappa: 0.1687, phi: 0.446, h_bar_m: 0.0979, samples: 3484 };
 
-export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, priors = null }) {
+/**
+ * Per-*class* shape priors seeded when the Nutrition5k per-class fit isn't
+ * available yet (fit_priors.py needs per-class labels — a roadmap item). Values
+ * follow MATH.md §4: `mound` = the global fit; `flat` foods (bread, pizza) fill
+ * their footprint as a thin slab (φ≈1) with a fixed thickness h̄; `container`
+ * (bowls, cups) is flagged and handled by the solid-of-revolution route. A
+ * per-class entry passed in `priors` (from fit_priors.py) overrides these.
+ */
+const DEFAULT_CLASS_PRIORS = {
+  mound: { kind: "mound", kappa: 0.1687, phi: 0.446, h_bar_m: 0.0979 },
+  flat: { kind: "flat", kappa: 0.05, phi: 1.0, h_bar_m: 0.015 },
+  container: { kind: "container", kappa: 0.25, phi: 0.5, h_bar_m: 0.05 },
+};
+
+const normalizeDesc = (s) => String(s).toLowerCase().replace(/\s+/g, " ").trim();
+
+export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, priors = null, foodClasses = {} }) {
+  // Normalize the food → shape-class map keys once for case-insensitive lookup.
+  const classByDesc = new Map(
+    Object.entries(foodClasses).map(([desc, cls]) => [normalizeDesc(desc), cls]),
+  );
   const read = (name) => csvRecords(readFileSync(join(fdcDir, name), "utf8"));
 
   const foods = read("food.csv").filter((f) => dataTypes.includes(f.data_type));
@@ -99,6 +119,13 @@ export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, prior
     densitiesByFood.set(row.fdc_id, list);
   }
 
+  // A bundle build fully REPLACES its output; drop any stale file (+ WAL
+  // sidecars) so a schema change isn't silently blocked by CREATE TABLE IF NOT
+  // EXISTS keeping the old columns.
+  rmSync(out, { force: true });
+  rmSync(`${out}-wal`, { force: true });
+  rmSync(`${out}-shm`, { force: true });
+
   const db = new DatabaseSync(out);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec(`
@@ -111,7 +138,8 @@ export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, prior
       sodium100 REAL, cholesterol100 REAL, potassium100 REAL,
       calcium100 REAL, iron100 REAL,
       density_g_per_ml REAL,
-      density_source TEXT
+      density_source TEXT,
+      shape_class TEXT
     );
     CREATE TABLE IF NOT EXISTS shape_priors (
       class TEXT PRIMARY KEY,
@@ -140,8 +168,8 @@ export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, prior
       kcal100, protein100, carbs100, fat100,
       fiber100, sugar100, satfat100,
       sodium100, cholesterol100, potassium100, calcium100, iron100,
-      density_g_per_ml, density_source
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      density_g_per_ml, density_source, shape_class
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertFts = fts
     ? db.prepare("INSERT INTO foods_fts (rowid, description) VALUES (?, ?)")
@@ -174,6 +202,7 @@ export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, prior
       cols.iron100 ?? null,
       median,
       median !== null ? "fdc_portion" : null,
+      classByDesc.get(normalizeDesc(food.description)) ?? null,
     );
     insertFts?.run(Number(food.fdc_id), food.description);
   }
@@ -184,6 +213,7 @@ export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, prior
   const insertShape = db.prepare(
     "INSERT OR REPLACE INTO shape_priors (class, kind, kappa, phi, h_bar_m, samples, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
   );
+  const writtenClasses = new Set();
   let shapePriors = 0;
   for (const [cls, p] of Object.entries(priors ?? {})) {
     insertShape.run(
@@ -195,9 +225,21 @@ export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, prior
       p.samples ?? null,
       "nutrition5k_fit",
     );
+    writtenClasses.add(cls);
     shapePriors++;
   }
-  if (!priors || !("_global" in priors)) {
+  // Seed the per-class defaults (mound/flat/container) the fit didn't provide —
+  // but only when foods actually carry classes, so a classless bundle keeps just
+  // `_global` (the store falls back to it anyway). MATH.md §4.
+  if (classByDesc.size > 0) {
+    for (const [cls, p] of Object.entries(DEFAULT_CLASS_PRIORS)) {
+      if (writtenClasses.has(cls)) continue;
+      insertShape.run(cls, p.kind, p.kappa ?? null, p.phi ?? null, p.h_bar_m ?? null, null, "default");
+      writtenClasses.add(cls);
+      shapePriors++;
+    }
+  }
+  if (!writtenClasses.has("_global")) {
     const g = DEFAULT_GLOBAL_PRIOR;
     insertShape.run("_global", g.kind, g.kappa, g.phi, g.h_bar_m, g.samples, "default");
     shapePriors++;

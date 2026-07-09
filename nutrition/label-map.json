@@ -1,0 +1,62 @@
+{
+  "_comment": "Curated classifier-label → FDC description map (the quality-critical artifact, STATUS.md / REAL_ADAPTERS.md §1). Keys are lowercased classifier/user labels + synonyms; values are FDC descriptions (or an fdc_id number) the NutrientStore resolves by exact match. Unmapped labels fall back to the store's FTS/LIKE search. Targets here match the starter bundle (nutrition/starter); extend with the FoodSeg103 vocabulary once the classifier vocab is fixed.",
+
+  "rice": "Rice, white, cooked",
+  "white rice": "Rice, white, cooked",
+  "white rice, cooked": "Rice, white, cooked",
+  "cooked rice": "Rice, white, cooked",
+  "steamed rice": "Rice, white, cooked",
+  "jasmine rice": "Rice, white, cooked",
+
+  "chicken": "Chicken breast, cooked, roasted",
+  "chicken breast": "Chicken breast, cooked, roasted",
+  "grilled chicken": "Chicken breast, cooked, roasted",
+  "roasted chicken": "Chicken breast, cooked, roasted",
+  "chicken breast, cooked, roasted": "Chicken breast, cooked, roasted",
+
+  "broccoli": "Broccoli, cooked, boiled",
+  "steamed broccoli": "Broccoli, cooked, boiled",
+  "cooked broccoli": "Broccoli, cooked, boiled",
+
+  "egg": "Egg, whole, cooked, hard-boiled",
+  "eggs": "Egg, whole, cooked, hard-boiled",
+  "boiled egg": "Egg, whole, cooked, hard-boiled",
+  "hard-boiled egg": "Egg, whole, cooked, hard-boiled",
+  "hard boiled egg": "Egg, whole, cooked, hard-boiled",
+
+  "salmon": "Salmon, Atlantic, cooked",
+  "cooked salmon": "Salmon, Atlantic, cooked",
+  "grilled salmon": "Salmon, Atlantic, cooked",
+  "fish": "Salmon, Atlantic, cooked",
+
+  "pasta": "Pasta, cooked, enriched",
+  "spaghetti": "Pasta, cooked, enriched",
+  "noodles": "Pasta, cooked, enriched",
+  "macaroni": "Pasta, cooked, enriched",
+  "penne": "Pasta, cooked, enriched",
+
+  "potato": "Potato, baked, flesh and skin",
+  "baked potato": "Potato, baked, flesh and skin",
+  "potatoes": "Potato, baked, flesh and skin",
+
+  "beef": "Ground beef, 85% lean, cooked",
+  "ground beef": "Ground beef, 85% lean, cooked",
+  "hamburger": "Ground beef, 85% lean, cooked",
+  "burger": "Ground beef, 85% lean, cooked",
+  "minced beef": "Ground beef, 85% lean, cooked",
+
+  "banana": "Banana, raw",
+  "bananas": "Banana, raw",
+
+  "apple": "Apple, raw, with skin",
+  "apples": "Apple, raw, with skin",
+
+  "almonds": "Almonds, raw",
+  "almond": "Almonds, raw",
+  "nuts": "Almonds, raw",
+
+  "bread": "Bread, white, commercial",
+  "toast": "Bread, white, commercial",
+  "white bread": "Bread, white, commercial",
+  "slice of bread": "Bread, white, commercial"
+}

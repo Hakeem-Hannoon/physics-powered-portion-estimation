@@ -75,3 +75,26 @@ describe("SqliteNutrientStore", () => {
     store.close();
   });
 });
+
+describe("per-food shape class", () => {
+  const classWorkDir = mkdtempSync(join(tmpdir(), "ppe-class-"));
+  const classedPath = join(classWorkDir, "classed.sqlite");
+  // Assign one fixture food a class; the other stays unmapped (→ _global).
+  beforeAll(() =>
+    buildBundle({ fdcDir: fixtures, out: classedPath, foodClasses: { "Banana, raw": "flat" } }),
+  );
+  afterAll(() => rmSync(classWorkDir, { recursive: true, force: true }));
+
+  it("resolves a food to its assigned class prior, not _global", async () => {
+    const store = openNutrientStore(classedPath);
+    const banana = (await store.lookup("Banana, raw"))!;
+    expect(banana.shape.kind).toBe("flat"); // the flat class prior, not the mound global
+    expect(banana.shape.phi).toBe(1); // flat slab fills its footprint
+    expect(banana.shape.hBarM).toBe(0.015); // flat thickness default (MATH.md §4)
+    // An unmapped food still falls back to the _global mound prior.
+    const rice = (await store.lookup("Rice, white, cooked"))!;
+    expect(rice.shape.kind).toBe("mound");
+    expect(rice.shape.kappa).toBe(0.1687);
+    store.close();
+  });
+});
