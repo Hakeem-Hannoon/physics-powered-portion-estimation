@@ -46,8 +46,10 @@ Key fields (full walkthrough in [[The Pipeline]]):
 | `camera_to_world` | 4×4 pose, ARKit convention (y‑up, z‑back) |
 | `plane` | the supporting surface: `n·X = d0` in the world frame |
 | `strokes[]` | ruler strokes `{p1, p2, length_m, kind}`, `kind` = horizontal (scale) or vertical (height) |
-| `depth` | LiDAR/scene depth map + confidence, or `null` |
+| `depth` | LiDAR/scene depth map + confidence, or `null` — serialized on **both** platforms now (iOS LiDAR, Android `acquireDepthImage16Bits`; `CAPTURE_QUALITY.md` R3) |
 | `scale_source` | `lidar` \| `ruler` \| `reference_object` \| `stated` \| `none` — the fallback ladder ([[MATH]] §7) |
+| `tracking` *(optional)* | `{state, plane_source}` — real VIO tracking state (`CAPTURE_QUALITY.md` R9) + where the plane came from |
+| `capture_quality` *(optional)* | additive telemetry: light, exposure, camera speed, view angle, distance — feeds `quality.est_relative_error` (`CAPTURE_QUALITY.md` R8). `version` stays 1 |
 
 The pipeline **validates this on the way in** and **validates its own `EstimateResult` on the way out** — both edges enforced by zod. A malformed payload is rejected at the boundary, never half‑processed. See [[Testing]] (pipeline test #4).
 

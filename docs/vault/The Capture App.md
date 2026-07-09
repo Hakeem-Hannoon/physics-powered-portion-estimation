@@ -4,7 +4,7 @@ tags: [ppe, codebase, native, capture]
 
 # The Capture App
 
-> The native AR capture screen — the only part that touches the camera and motion sensors. It runs the ruler ([[Math 2 - The Ruler]]) and emits the `CapturePayload`. Code: `modules/expo-portion-capture/`, `apps/demo/`. Spec: [[ARCHITECTURE]] §1.
+> The native AR capture screen — the only part that touches the camera and motion sensors. It runs the ruler ([[Math 2 - The Ruler]]) and emits the `CapturePayload`. Code: `modules/expo-portion-capture/`, `apps/demo/`. Spec: [[ARCHITECTURE]] §1. Image-quality audit + the R1–R9 changes: [`docs/CAPTURE_QUALITY.md`](../CAPTURE_QUALITY.md).
 
 ## Why a custom native module
 
@@ -14,15 +14,23 @@ No maintained React Native / Expo library exposes ARKit raycasting + intrinsics 
 
 A load‑bearing fact to know:
 
-- **Android (Kotlin/ARCore) = the reworked version.** Center **sparkle reticle** + a **"45 lb gym‑plate" trigger that doubles as a thumb‑trackpad**, so *the finger never covers the food*. Has the full [[Math 2 - The Ruler]] §2.4 stabilization stack. Depth is enabled where supported but **not yet serialized** (payload `depth: null`, so `scale_source = "ruler"`). Built and running on a Pixel.
-- **iOS (Swift/ARKit) = the older tap‑hold‑drag version.** The finger raycasts at its own screen location (so it covers the food), built on SceneKit 3D nodes, and it's the **only** platform that currently exports **LiDAR depth**. No stabilization stack yet — iOS parity is [[Roadmap and Next Steps]] item 2.
+- **Android (Kotlin/ARCore) = the reworked interaction.** Center **sparkle reticle** + a **"45 lb gym‑plate" trigger that doubles as a thumb‑trackpad**, so *the finger never covers the food*. Has the full [[Math 2 - The Ruler]] §2.4 stabilization stack. Built and running on a Pixel.
+- **iOS (Swift/ARKit) = the older tap‑hold‑drag interaction** (the finger raycasts at its own location, on SceneKit nodes). The full reticle + plate‑trackpad redesign is still [[Roadmap and Next Steps]] item 2 — but as of the `CAPTURE_QUALITY.md` R1–R9 pass it now runs the **same §2.4 stabilization statistics** (per‑frame median buffer, shake gate, plane snap) under that tap‑drag UI, so its *accuracy* is at parity even though its *interaction* isn't.
 
-Same payload out either way; different interaction and maturity.
+**What the R1–R9 capture‑quality pass changed on both** (code done, device‑validation pending — see `CAPTURE_QUALITY.md`):
+
+- **Resolution.** Android now selects the **largest‑area CPU camera config** (`selectHighResCameraConfig`) instead of ARCore's ~640×480 default; iOS freezes a **12 MP still** via ARKit 6 `captureHighResolutionFrame` instead of a ~1920×1440 video frame, building the payload entirely from the returned frame (its own intrinsics/pose — [[MATH]] §9.1).
+- **Depth everywhere it exists.** Android **serializes ARCore depth** (`acquireDepthImage16Bits` → f32 meters, intrinsics rescaled) — no longer `depth: null` — so depth‑capable Androids move up to `scale_source: "lidar"` and unlock the §4a height‑field volume route. iOS already exported LiDAR depth.
+- **Sharper frames.** A **motion‑blur shutter gate** (R6) waits a few frames for the phone to hold still (tighter than the measuring gate; a short grace window never traps the user) before freezing; iOS **pins the HEIC/JPEG lossy quality** (R4) so encoding is deterministic across OS versions.
+- **Dim scenes.** Ambient‑light coaching + a **torch toggle** (ARCore `FlashMode.TORCH`; iOS `configurableCaptureDeviceForPrimaryCamera`).
+- **Honest signals.** Real `tracking.state` (was hardcoded `"normal"`), a tilt/too‑top‑down coach, and an additive optional **`capture_quality`** payload block (light, exposure, camera speed, view angle, distance) that feeds `quality.est_relative_error` and turns the P0/P1 drills into labeled quality data.
+
+Same payload schema out either way; different interaction, same math and now the same capture‑quality treatment.
 
 ## The AR session
 
-- **Android** (`ARCaptureActivity.ensureSession`): handles the Play‑Services‑for‑AR install flow, then configures plane finding **horizontal + vertical** (the ruler may hit any surface), latest‑camera‑image update mode, auto‑focus, and depth `AUTOMATIC` where supported. Capture is gated on `TrackingState.TRACKING`.
-- **iOS** (`ARCaptureViewController.makeConfiguration`): `ARWorldTrackingConfiguration` with horizontal plane detection, LiDAR **mesh** reconstruction + `smoothedSceneDepth` where available, and Apple's `ARCoachingOverlayView` for the "move your phone" UX. Capture gated on `.normal` tracking.
+- **Android** (`ARCaptureActivity.ensureSession` → `selectHighResCameraConfig` + `applyConfig`): handles the Play‑Services‑for‑AR install flow, **selects the largest‑area CPU camera config** (R1), then configures plane finding **horizontal + vertical** (the ruler may hit any surface), latest‑camera‑image update mode, auto‑focus, `AMBIENT_INTENSITY` light estimation, depth `AUTOMATIC` where supported, and `FlashMode` from the torch toggle. Capture is gated on `TrackingState.TRACKING`.
+- **iOS** (`ARCaptureViewController.makeConfiguration`): `ARWorldTrackingConfiguration` with horizontal plane detection, LiDAR **mesh** reconstruction + `smoothedSceneDepth` where available, `recommendedVideoFormatForHighResolutionFrameCapturing` (R2), a `session.delegate` per‑frame loop for the §2.4 stabilization, and Apple's `ARCoachingOverlayView` for the "move your phone" UX. Capture gated on `.normal` tracking.
 
 ## The Android interaction (worth studying) — maps to [[Math 2 - The Ruler]]
 
@@ -52,7 +60,7 @@ Raycast preference: plane‑within‑polygon → any tracked plane → any depth
 
 ## Building the `CapturePayload`
 
-Both platforms' `buildPayload` produce the same schema ([[System Architecture]]): write the image (Android JPEG from YUV, iOS HEIC), read `intrinsics` and the pose (transpose to the row‑major, ARKit‑convention 4×4 the geometry expects), express the locked plane as `n·X = d0`, map the strokes, set `depth` (iOS serializes LiDAR f32 + confidence with **intrinsics rescaled to depth resolution** per [[MATH]] §9.1; Android `null` for now), and set `scale_source`. Both feed `poseFromArkitCameraToWorld` in the [[Geometry Library]] unchanged.
+Both platforms' `buildPayload` produce the same schema ([[System Architecture]]): write the image (Android JPEG from YUV, iOS HEIC at pinned lossy quality), read `intrinsics` and the pose (transpose to the row‑major, ARKit‑convention 4×4 the geometry expects), express the locked plane as `n·X = d0`, map the strokes, set `depth`, `tracking.state` (the real state now, R9), `scale_source`, and the optional `capture_quality` block (R8). Depth is serialized on **both** platforms with **intrinsics rescaled to depth resolution** per [[MATH]] §9.1 — iOS from LiDAR `smoothedSceneDepth` (f32 + confidence), Android from `acquireDepthImage16Bits` (DEPTH16→f32 meters, confidence `null` pending the Raw Depth API). Both feed `poseFromArkitCameraToWorld` in the [[Geometry Library]] unchanged.
 
 ## The JS API (`src/index.ts`)
 

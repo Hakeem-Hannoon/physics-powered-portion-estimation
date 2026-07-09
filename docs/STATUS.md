@@ -2,7 +2,7 @@
 
 The single source of truth for where this project stands. Updated 2026-07-09.
 
-Companion docs: [`../README.md`](../README.md) (overview) · [`MATH.md`](MATH.md) (derivations) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (system design) · [`MODELS.md`](MODELS.md) (model landscape) · [`HARDWARE.md`](HARDWARE.md) (sensors/devices).
+Companion docs: [`../README.md`](../README.md) (overview) · [`MATH.md`](MATH.md) (derivations) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (system design) · [`MODELS.md`](MODELS.md) (model landscape) · [`HARDWARE.md`](HARDWARE.md) (sensors/devices) · [`CAPTURE_QUALITY.md`](CAPTURE_QUALITY.md) (image-capture audit + R1–R9).
 
 ---
 
@@ -48,8 +48,15 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 - ✅ **Demo Expo app** (`apps/demo`) — capture → pipeline with a placeholder segmenter; the vehicle for the P0/P1 device drills.
 - ✅ **Toolchain unblocked** — Android SDK, `local.properties`, `ANDROID_HOME`, monorepo Metro resolution, and the Expo-module dependency set all sorted so `npx expo run:android` builds clean.
 
+### Capture-quality pass (R1–R9, code done — device validation pending)
+- ✅ **Image resolution** — Android now selects the **largest-area CPU camera config** (was ARCore's ~640×480 default); iOS captures a **12 MP still** via ARKit 6 `captureHighResolutionFrame`, building the payload from the returned frame's own intrinsics/pose (MATH.md §9.1).
+- ✅ **Android depth serialized** — `acquireDepthImage16Bits` → f32-meters sidecar with rescaled intrinsics; depth-capable Androids move to `scale_source: "lidar"` and unlock the §4a height-field route. (Confidence still `null` — Raw Depth API is the follow-up.)
+- ✅ **iOS §2.4 stabilization** — per-frame median buffer + shake gate + plane snap ported under the existing tap-drag UI (accuracy parity; the reticle/plate-trackpad **interaction** redesign is still item 2 below).
+- ✅ **Sharper + honest** — motion-blur shutter gate (both), pinned iOS encode quality, ambient-light coaching + torch (both), tilt/too-far coaching, real `tracking.state`, and an additive optional `capture_quality` telemetry block in the contract (feeds `est_relative_error`; turns P0/P1 into labeled quality data).
+- ✅ Details + rationale + on-device verification plan: [`CAPTURE_QUALITY.md`](CAPTURE_QUALITY.md).
+
 ### Docs
-- ✅ `README.md`, `MATH.md` (incl. §2.4 stabilization + §8 error budget), `ARCHITECTURE.md`, `MODELS.md` (web-verified model landscape), `HARDWARE.md`, and this `STATUS.md`. Screenshot slots wired in the README (`docs/images/*`, pending upload).
+- ✅ `README.md`, `MATH.md` (incl. §2.4 stabilization + §8 error budget), `ARCHITECTURE.md`, `MODELS.md` (web-verified model landscape), `HARDWARE.md`, `CAPTURE_QUALITY.md`, and this `STATUS.md`. Screenshot slots wired in the README (`docs/images/*`, pending upload).
 
 ### Training + infra (scripts ready, repo public)
 - ✅ **Training scripts** — SegFormer/FoodSeg103 fine-tune (eval memory-safe, writes `eval_results.json`), the scale-conditioned mass regressor (MobileNetV3 + FiLM), Nutrition5k manifest extraction, prior fitting, Core ML export.
@@ -77,7 +84,7 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 ## 5. ⬜ Coming up next (ordered)
 
 1. ✅ **Wire the fitted priors — done.** κ=0.1687 / φ=0.446 / h̄=0.098 m (n=3,484) are now `DEFAULT_KAPPA`/`DEFAULT_MOUND_PHI` in `@ppe/pipeline`, the ETL's default `shape_priors`, and `model/priors/priors.json`. Per-class values await per-class labels.
-2. ⬜ **iOS capture parity** — the Swift/ARKit module still has the original tap-drag interaction; port the reticle + plate-trackpad + stabilization rework from the Kotlin side, then dev-build and run the P0 drill on iPhone. iPhone Pro (LiDAR) additionally unlocks the measured height-field volume route (highest-accuracy tier).
+2. 🟡 **iOS capture parity** — the §2.4 stabilization stats + capture-quality pass (R1–R9) are now ported, so iOS is at **accuracy** parity under its existing tap-drag UI. Remaining: the reticle + plate-trackpad **interaction** redesign (finger-never-covers-food), then dev-build and run P0 on iPhone. iPhone Pro (LiDAR) additionally unlocks the measured height-field volume route (highest-accuracy tier).
 3. ⬜ **Real model adapters** — replace the mocks behind the pipeline interfaces: `Segmenter` (SAM 2.1-tiny Core ML on iOS / SegFormer fine-tune via ExecuTorch on Android), `Classifier` (MobileCLIP zero-shot over a precomputed food vocabulary), `DepthProvider` (LiDAR on iOS; Android Depth16 later). Highest-risk unknown: the Android ExecuTorch custom-model path — de-risk first.
 4. ⬜ **On-device nutrient bundle** — run the `nutrition/` ETL over the real FDC CSVs (~15–30 MB SQLite), ship it as an app asset, implement `NutrientStore` over expo-sqlite, and curate the classifier-label → FDC-row mapping table (the quality-critical data artifact).
 5. ⬜ **Core ML / ExecuTorch export + inference wiring** — notebook 04 exports; wire the exported models into the module and benchmark on-device latency.
@@ -114,4 +121,4 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 - **Portion size is the hard ceiling, by physics.** Realistic per-item error: ~30% (shape priors only) → ~20% (measured height) → ~16% (LiDAR/depth), matching the Nutrition5k literature. Per-meal error shrinks ~1/√k across items. The propose→confirm-with-editable-portions UX is the correct answer; chasing sub-20% autonomous accuracy is a research program, not a feature.
 - **No off-the-shelf on-device food SDK to adopt** — the one that existed (Passio, the tech behind MyFitnessPal Meal Scan) pivoted to cloud LLMs. The winning architecture everywhere is *identify with a model → get the numbers from a verified DB → confirm portions*. This project's differentiator is the *measured* scale.
 - **The novel model is the scale-conditioned mass regressor** — verified that nothing public conditions mass regression on a measured AR scale reference. It's a small FiLM head on a MobileNet backbone (CNN, no RNN — a capture is one frame + scalars, not a sequence).
-- **iOS is written but not yet reworked** — the interaction upgrades (reticle, plate trackpad, stabilization, free-surface, wink, too-far) currently live only in the Android module; iOS parity is item #2 in §5.
+- **iOS: accuracy reworked, interaction not yet** — the §2.4 stabilization + the R1–R9 capture-quality pass now run on iOS, so its *numbers* match Android. The *interaction* upgrades (reticle, plate trackpad, free-surface, wink) still live only in the Android module; that redesign is item #2 in §5.
