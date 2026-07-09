@@ -25,14 +25,14 @@ Be the portion‑estimation engine for **Spotter** meal logging, and stand alone
 
 - ✅ **SegFormer fine‑tune (notebook 02)** — done: **mIoU 0.246** (nvidia/mit‑b0), right at the ~0.25 target and vs. ≤ 0.05 for every public checkpoint. → [[Segmentation Model]]
 - ✅ **Nutrition5k manifest + priors (notebook 03)** — manifest extracted (3,484 dishes) and `priors.json` fit + wired in (κ=0.1687). → [[Shape Priors and Nutrition5k]]
-- ✅ **Mass regressor (notebook 03)** — trained: **mass MAPE 24.1%** (within the §8 budget), kcal head ~32%. Tuning to beat the RGB baseline is the next experiment → [[Mass Regressor Model]] ("Improving the model").
+- ✅ **Mass regressor (notebook 03)** — trained: **mass MAPE 24.1%** (v0, within the §8 budget), kcal head ~32%. Two scale‑leverage techniques now **implemented + smoke‑verified** (physics‑anchored residual, scale‑source parity — `docs/MODEL_IMPROVEMENTS.md`); the v1 A/B run is pending. → [[Mass Regressor Model]], `docs/MODELS_REGISTRY.md`.
 - **P0 / P1 physical drills** — ruler vs. tape measure; geometry‑only mass vs. kitchen scale. → [[Testing]]
 - **Screenshots** — README image slots awaiting device upload.
 
 ## ⬜ Next (ordered)
 
 1. ✅ **Wire the fitted priors — done.** The Nutrition5k global fit (κ=0.1687, φ=0.446, h̄=0.098 m, n=3484) is now `DEFAULT_KAPPA`/`DEFAULT_MOUND_PHI` in [[The Pipeline]], the ETL's default `shape_priors`, and committed as `model/priors/priors.json`. Per‑class κ/φ await per‑class labels.
-2. **iOS capture parity** — port the reticle + plate‑trackpad + stabilization from Android to the Swift module; run P0 on iPhone. iPhone Pro also unlocks the LiDAR height‑field volume route. → [[The Capture App]]
+2. **iOS capture parity** — the §2.4 stabilization + the R1–R9 capture‑quality pass are now ported (accuracy parity); what remains is the reticle + plate‑trackpad **interaction** redesign, then run P0 on iPhone. iPhone Pro also unlocks the LiDAR height‑field volume route. → [[The Capture App]], `docs/CAPTURE_QUALITY.md`.
 3. **Real model adapters** — replace the mocks: `Segmenter` (SAM 2.1‑tiny Core ML / SegFormer via ExecuTorch), `Classifier` (MobileCLIP zero‑shot), `DepthProvider` (LiDAR). De‑risk the Android ExecuTorch custom‑model path first. → [[Segmentation Model]]
 4. **On‑device nutrient bundle** — run the ETL over real FDC CSVs, ship the SQLite as an asset, implement `NutrientStore` over expo‑sqlite, and curate the **label → FDC‑row** mapping (the quality‑critical artifact). → [[Nutrition Database]]
 5. **Core ML / ExecuTorch export + inference wiring** — notebook 04 exports; wire and benchmark on‑device. → [[Training Pipeline]]
@@ -47,7 +47,7 @@ Be the portion‑estimation engine for **Spotter** meal logging, and stand alone
 | **P0** ruler accuracy | the physics on real hardware (≤ 5 mm) | 🟡 ready to run |
 | **P1** geometry‑only mass | the metric pipeline on real food (≤ 25%) | 🟡 pending P0 |
 | **P2** models in | on‑device segment + classify wired | ⬜ |
-| **P3** the regressor | scale‑conditioned regression, A/B | 🟡 trained (mass 24.1%); tuning + A/B next |
+| **P3** the regressor | scale‑conditioned regression, A/B | 🟡 v0 trained (mass 24.1%); v1 residual + scale‑parity implemented, A/B run pending |
 | **P4** benchmark + integrate | Nutrition5k numbers; live in Spotter | ⬜ |
 
 ## The load‑bearing constraint
