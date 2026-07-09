@@ -6,7 +6,8 @@
   "scripts": {
     "start": "expo start --dev-client",
     "ios": "expo run:ios",
-    "android": "expo run:android"
+    "android": "expo run:android",
+    "build:nutrients": "node --experimental-sqlite ../../nutrition/starter/build-starter.mjs --out assets/nutrients.sqlite --priors ../../model/priors/priors.json"
   },
   "dependencies": {
     "@ppe/geometry": "file:../../packages/geometry",
@@ -18,6 +19,7 @@
     "expo-font": "~13.3.2",
     "expo-keep-awake": "~14.1.4",
     "expo-portion-capture": "file:../../modules/expo-portion-capture",
+    "expo-sqlite": "~15.2.14",
     "expo-status-bar": "~2.2.0",
     "react": "19.0.0",
     "react-native": "0.79.6",

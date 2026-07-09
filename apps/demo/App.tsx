@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Button,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -8,20 +9,16 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as PortionCapture from "expo-portion-capture";
-import {
-  type EstimateResult,
-  type Region,
-  type Segmenter,
-  FixedClassifier,
-  InMemoryNutrientStore,
-  estimateMeal,
-} from "@ppe/pipeline";
+import { type EstimateResult, type Region, type Segmenter, estimateMeal } from "@ppe/pipeline";
+import { ExpoSqliteNutrientStore } from "./src/nutrient-store";
+import { FOOD_ALIASES, STARTER_FOODS, SelectedClassifier } from "./src/foods";
 
 /**
- * Placeholder segmenter until the on-device model lands (roadmap P2): a
- * centered square covering ~16% of the frame. Combined with a real capture
- * this exercises the full metric path — ruler → homography → area → volume
- * → mass → nutrients — against food you can weigh on a kitchen scale (P1).
+ * Placeholder segmenter until the on-device model lands (roadmap P2): a centered
+ * square covering ~16% of the frame. Combined with a real capture this exercises
+ * the full metric path — ruler → homography → area → volume → mass → nutrients —
+ * against food you can weigh on a kitchen scale (P1). The real segmenter lives in
+ * src/vision-adapters.ts (MaskSegmenter), pending the exported model.
  */
 class CenterSquareSegmenter implements Segmenter {
   segment(_imageUri: string, [w, h]: [number, number]): Promise<Region[]> {
@@ -41,32 +38,31 @@ class CenterSquareSegmenter implements Segmenter {
   }
 }
 
-const deps = {
-  segmenter: new CenterSquareSegmenter(),
-  classifier: new FixedClassifier({ label: "white rice, cooked", confidence: 0.99 }),
-  nutrients: new InMemoryNutrientStore([
-    {
-      label: "white rice, cooked",
-      per100: {
-        kcal: 130,
-        proteinG: 2.7,
-        carbsG: 28.2,
-        fatG: 0.3,
-        micros: { potassiumMg: 35, sodiumMg: 1 },
-      },
-      densityGPerMl: 0.67,
-      shape: { kind: "mound", kappa: 0.1687, phi: 0.446 },
-    },
-  ]),
-};
-
 export default function App() {
   const [result, setResult] = useState<EstimateResult | null>(null);
-  const [status, setStatus] = useState("Ready");
+  const [status, setStatus] = useState("Pick the food, then capture");
+  const [food, setFood] = useState(STARTER_FOODS[0]!);
+
+  // Stable deps: real USDA nutrient store + a selection-driven classifier (the
+  // interim for on-device classification) + placeholder segmentation.
+  const classifier = useRef(new SelectedClassifier(food));
+  const deps = useMemo(
+    () => ({
+      segmenter: new CenterSquareSegmenter(),
+      classifier: classifier.current,
+      nutrients: new ExpoSqliteNutrientStore(FOOD_ALIASES),
+    }),
+    [],
+  );
+
+  const selectFood = (label: string) => {
+    setFood(label);
+    classifier.current.setLabel(label);
+  };
 
   const capture = async () => {
     if (!PortionCapture.isSupported()) {
-      setStatus("ARKit is unavailable — use a development build on a real device");
+      setStatus("ARKit/ARCore unavailable — use a development build on a real device");
       return;
     }
     setStatus("Capturing…");
@@ -78,7 +74,7 @@ export default function App() {
       }
       setStatus("Estimating…");
       setResult(await estimateMeal(payload, deps));
-      setStatus("Done — placeholder segmentation, real geometry");
+      setStatus(`Done — real USDA nutrition for “${food}”, placeholder segmentation`);
     } catch (error) {
       setStatus(`Failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -89,7 +85,23 @@ export default function App() {
       <StatusBar style="auto" />
       <Text style={styles.title}>Physics-Powered Portion Estimation</Text>
       <Text style={styles.subtitle}>{status}</Text>
+
+      <Text style={styles.section}>What's on the plate?</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips}>
+        {STARTER_FOODS.map((label) => (
+          <Pressable
+            key={label}
+            onPress={() => selectFood(label)}
+            style={[styles.chip, label === food && styles.chipActive]}>
+            <Text style={[styles.chipText, label === food && styles.chipTextActive]}>
+              {label.split(",")[0]}
+            </Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
       <Button title="Capture a meal" onPress={capture} />
+
       {result && (
         <ScrollView style={styles.results}>
           {result.items.map((item, i) => (
@@ -124,6 +136,18 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingTop: 80, paddingHorizontal: 20, gap: 12 },
   title: { fontSize: 20, fontWeight: "600" },
   subtitle: { color: "#666" },
+  section: { fontWeight: "600", marginTop: 8 },
+  chips: { flexGrow: 0 },
+  chip: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: "#eee",
+    marginRight: 8,
+  },
+  chipActive: { backgroundColor: "#111" },
+  chipText: { color: "#333", fontWeight: "500" },
+  chipTextActive: { color: "#fff" },
   results: { marginTop: 16 },
   card: {
     padding: 12,
