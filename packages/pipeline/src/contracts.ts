@@ -56,6 +56,30 @@ export const capturePayloadSchema = z.object({
     .object({ state: z.string(), plane_source: z.string() })
     .optional(),
   scale_source: scaleSourceSchema,
+  /**
+   * Optional capture-condition telemetry (CAPTURE_QUALITY.md R8). Additive and
+   * fully optional, so `version` stays 1: older payloads omit it, the pipeline
+   * treats every field as best-effort. Feeds `quality.est_relative_error` — a
+   * dim, oblique, or far capture honestly widens the band — and gives the app a
+   * concrete retake reason. Platform-native units where noted; null when the
+   * platform can't measure a given field.
+   */
+  capture_quality: z
+    .object({
+      /** Ambient light. iOS: ARLightEstimate.ambientIntensity (~lumens, 1000≈bright). Android: LightEstimate.pixelIntensity (~0–1). */
+      light_estimate: z.number().nullable(),
+      /** Frame exposure at shutter (iOS ARCamera.exposureDuration); null on Android. */
+      exposure_duration_s: z.number().nullable(),
+      /** Camera speed at shutter from pose deltas (MATH.md §2.4) — the blur proxy. */
+      camera_speed_m_s: z.number().nonnegative(),
+      camera_speed_rad_s: z.number().nonnegative(),
+      /** Angle between the camera optical axis and the plane normal; 0 = top-down (MATH.md §3.2). */
+      view_angle_deg: z.number().nonnegative(),
+      /** Camera height above the plane along its normal (meters). */
+      distance_m: z.number().positive(),
+    })
+    .partial()
+    .optional(),
 });
 
 export type CapturePayload = z.infer<typeof capturePayloadSchema>;
