@@ -44,3 +44,7 @@ nutrition/*.db
 # Env
 .env
 .env.*
+
+# SQLite journal sidecars (transient; the shipped bundle is a single file)
+*.sqlite-wal
+*.sqlite-shm
