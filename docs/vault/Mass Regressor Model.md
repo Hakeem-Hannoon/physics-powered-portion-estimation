@@ -44,6 +44,8 @@ Why this beats just concatenating the scalars onto the features: FiLM lets the m
 ### The head
 A small MLP outputs two numbers: `log_mass` and `log_kcal`. They share the modulated features and split only at the last layer, so kcal is a **cheap auxiliary task** that regularizes the shared representation.
 
+**Physics-anchored residual (default on).** In residual mode the mass output is *not* absolute — it's a **correction added to the geometry prior** `m̂ = ρ·V` (`physics_log_mass()`, from the same measured area/height via [[Math 4 - Volume Mass and Nutrients]]). The head starts near zero, so training *begins* at the physics estimate and only learns the density/shape deviation — a much tighter target than log-mass across two orders of magnitude. Ablate with `--no-residual`. Rationale + the other scale-leverage ideas: [`MODEL_IMPROVEMENTS.md`](../MODEL_IMPROVEMENTS.md).
+
 ## Why no RNN?
 Recurrent nets model *sequences*. A capture is **one frame plus scalars** — there is no sequence. A convolutional (or CNN‑ViT hybrid) encoder + FiLM conditioning is the right shape. If multi‑frame video sweeps ever land, the upgrade is *attention pooling over per‑frame embeddings* with the same backbone — still no recurrence. ([[MODELS]] §4.)
 
@@ -68,6 +70,8 @@ Targets: beat **26.1%** calorie MAPE (RGB baseline); approach **16.5%** (depth b
 **Read it honestly.** Mass 24.1% is the number that matters — production computes calories as **mass → classify → USDA kcal/g** ([[Nutrition Database]]), not from the auxiliary kcal head. The direct kcal head (~32%) trails the RGB baseline because predicting calories directly also requires inferring caloric density from appearance (lettuce ≈ 0.15 vs oil ≈ 9 kcal/g — a ~60× spread). Loss fell 0.83 → 0.24 and plateaued ~epoch 48, so it's converged, not under-trained. Since the model *conditions on depth-derived geometry*, it has depth-baseline-caliber information (16.5%) available — it's leaving some on the table, which the experiments below aim to recover.
 
 ## Improving the model (next experiments)
+
+> **Scale-leverage ideas live in [`MODEL_IMPROVEMENTS.md`](../MODEL_IMPROVEMENTS.md)** — the six ideas that exploit the measured metric scale. Two are **already implemented** in `mass_regressor_nutrition5k.py`: **#1 physics-anchored residual** (`--residual`, default on) and **#2 train/test scale-source parity** (`--scale-noise`, default on). #3 (second height stroke) and #4 (per-class priors) are noted there; #5 (higher-res rectified crop) is delivered by the `CAPTURE_QUALITY.md` R1/R2 capture work. The list below is the *standard ML-tuning* set that composes with those.
 
 Ordered by expected payoff / effort. All edits are in `model/train/mass_regressor_nutrition5k.py`; re-run notebook 03's train cell and compare `mass MAPE` / `kcal MAPE`. Change **one lever at a time** and record the number.
 
