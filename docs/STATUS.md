@@ -1,6 +1,6 @@
 # Project Status & Roadmap
 
-The single source of truth for where this project stands. Updated 2026-07-08.
+The single source of truth for where this project stands. Updated 2026-07-09.
 
 Companion docs: [`../README.md`](../README.md) (overview) · [`MATH.md`](MATH.md) (derivations) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (system design) · [`MODELS.md`](MODELS.md) (model landscape) · [`HARDWARE.md`](HARDWARE.md) (sensors/devices).
 
@@ -61,9 +61,9 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 ## 4. 🟡 In progress / waiting on
 
 ### Model training (running now, on the user's GPUs)
-- 🟡 **SegFormer fine-tune (notebook 02)** — training on an A100, loss dropping healthily (3.85→2.68 in epoch 1), ~2.5 h run. **Waiting on:** final mIoU (target ≥ 0.25 B0 / ≥ 0.32 B1) → README results row.
-- 🟡 **Nutrition5k manifest + priors (notebook 03)** — download complete (~3,490 overhead dishes on Drive); manifest extraction running (CPU). **Waiting on:** `priors.json` (fitted κ/φ/h̄) → replaces the `DEFAULT_KAPPA = 0.55` placeholder in `@ppe/pipeline` and seeds `nutrition/`'s `shape_priors`.
-- 🟡 **Mass regressor (notebook 03, cell 5)** — needs a **GPU runtime** (currently on a non-GPU session for the CPU steps). **Waiting on:** calorie MAPE vs the 26.1% (RGB) / 16.5% (depth) baselines → README results row.
+- ✅ **SegFormer fine-tune (notebook 02)** — done: **mIoU 0.246** (nvidia/mit-b0), at the ~0.25 B0 target and vs ≤ 0.05 for every public FoodSeg103 checkpoint.
+- ✅ **Nutrition5k manifest + priors (notebook 03)** — manifest extracted (3,484 dishes; now resilient to corrupt captures), `priors.json` fit (κ=0.1687, φ=0.446, h̄=0.098 m) and **wired in** — replaced the `DEFAULT_KAPPA = 0.55` placeholder in `@ppe/pipeline` + `nutrition/`'s `shape_priors`; committed as `model/priors/priors.json`.
+- ✅ **Mass regressor (notebook 03)** — trained: **mass MAPE 24.1%** (inside the §8 budget), kcal head ~32%. Tuning to beat the 26.1% RGB / 16.5% depth calorie baselines is the next experiment (`docs/vault/Mass Regressor Model.md` → "Improving the model").
 
 ### Physical validation (the user's phone + kitchen)
 - 🟡 **P0 — ruler accuracy** — measure known objects vs a tape measure at multiple angles. Pass bar: median ≤ 5 mm on 20 cm spans. This certifies the physics on real hardware → first real README results row.
@@ -76,7 +76,7 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 
 ## 5. ⬜ Coming up next (ordered)
 
-1. ⬜ **Wire the fitted priors** — drop the trained κ/φ/h̄ from `priors.json` into `@ppe/pipeline` (`DEFAULT_KAPPA` + per-class constants) and `nutrition/`'s `shape_priors` table. *(Unblocks the moment notebook 03 finishes — smallest, highest-value next step.)*
+1. ✅ **Wire the fitted priors — done.** κ=0.1687 / φ=0.446 / h̄=0.098 m (n=3,484) are now `DEFAULT_KAPPA`/`DEFAULT_MOUND_PHI` in `@ppe/pipeline`, the ETL's default `shape_priors`, and `model/priors/priors.json`. Per-class values await per-class labels.
 2. ⬜ **iOS capture parity** — the Swift/ARKit module still has the original tap-drag interaction; port the reticle + plate-trackpad + stabilization rework from the Kotlin side, then dev-build and run the P0 drill on iPhone. iPhone Pro (LiDAR) additionally unlocks the measured height-field volume route (highest-accuracy tier).
 3. ⬜ **Real model adapters** — replace the mocks behind the pipeline interfaces: `Segmenter` (SAM 2.1-tiny Core ML on iOS / SegFormer fine-tune via ExecuTorch on Android), `Classifier` (MobileCLIP zero-shot over a precomputed food vocabulary), `DepthProvider` (LiDAR on iOS; Android Depth16 later). Highest-risk unknown: the Android ExecuTorch custom-model path — de-risk first.
 4. ⬜ **On-device nutrient bundle** — run the `nutrition/` ETL over the real FDC CSVs (~15–30 MB SQLite), ship it as an app asset, implement `NutrientStore` over expo-sqlite, and curate the classifier-label → FDC-row mapping table (the quality-critical data artifact).
@@ -104,7 +104,7 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 | **P0** — ruler accuracy | The physics on real hardware (≤ 5 mm on 20 cm) | 🟡 ready to run on device |
 | **P1** — geometry-only mass | The metric pipeline on real food (≤ 25% mass) | 🟡 pending P0 |
 | **P2** — models in | On-device segmentation + classification wired | ⬜ |
-| **P3** — the regressor | Scale-conditioned mass regression, A/B vs geometry | 🟡 training now |
+| **P3** — the regressor | Scale-conditioned mass regression, A/B vs geometry | 🟡 trained (mass 24.1%); tuning + A/B next |
 | **P4** — benchmark + integrate | Nutrition5k/NutriBench numbers; live in Spotter | ⬜ |
 
 ---

@@ -25,7 +25,7 @@ Be the portion‑estimation engine for **Spotter** meal logging, and stand alone
 
 - ✅ **SegFormer fine‑tune (notebook 02)** — done: **mIoU 0.246** (nvidia/mit‑b0), right at the ~0.25 target and vs. ≤ 0.05 for every public checkpoint. → [[Segmentation Model]]
 - ✅ **Nutrition5k manifest + priors (notebook 03)** — manifest extracted (3,484 dishes) and `priors.json` fit + wired in (κ=0.1687). → [[Shape Priors and Nutrition5k]]
-- **Mass regressor (notebook 03)** — needs a GPU runtime; waiting on calorie MAPE vs. the 26.1% / 16.5% baselines. → [[Mass Regressor Model]]
+- ✅ **Mass regressor (notebook 03)** — trained: **mass MAPE 24.1%** (within the §8 budget), kcal head ~32%. Tuning to beat the RGB baseline is the next experiment → [[Mass Regressor Model]] ("Improving the model").
 - **P0 / P1 physical drills** — ruler vs. tape measure; geometry‑only mass vs. kitchen scale. → [[Testing]]
 - **Screenshots** — README image slots awaiting device upload.
 
@@ -47,7 +47,7 @@ Be the portion‑estimation engine for **Spotter** meal logging, and stand alone
 | **P0** ruler accuracy | the physics on real hardware (≤ 5 mm) | 🟡 ready to run |
 | **P1** geometry‑only mass | the metric pipeline on real food (≤ 25%) | 🟡 pending P0 |
 | **P2** models in | on‑device segment + classify wired | ⬜ |
-| **P3** the regressor | scale‑conditioned regression, A/B | 🟡 training now |
+| **P3** the regressor | scale‑conditioned regression, A/B | 🟡 trained (mass 24.1%); tuning + A/B next |
 | **P4** benchmark + integrate | Nutrition5k numbers; live in Spotter | ⬜ |
 
 ## The load‑bearing constraint

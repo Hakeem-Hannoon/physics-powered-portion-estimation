@@ -132,16 +132,16 @@ Verified landscape with IDs, licenses, sizes, latencies: [`docs/MODELS.md`](docs
 
 ## Testing set & results
 
-Three layers. Results are recorded here as each layer runs; unit results are current as of 2026-07-07 on this commit.
+Three layers. Results are recorded here as each layer runs; current as of 2026-07-09.
 
 **1. Unit + property tests (implemented — all green).**
 
 | Suite | Tests | What it proves |
 |---|---|---|
 | `packages/geometry` | 20 | Synthetic-scene ground truth: ray↔pixel round-trips at 1e-9 m, a known 10×10 cm square recovered from pixels to 0.01 m² at 1e-9, ruler self-check residual < 1e-9, the off-plane inflation exactly Z/(Z−h) and its correction exact, ARKit→CV pose conversion, intrinsics rescaling, volume/energy/error-budget algebra |
-| `packages/pipeline` | 4 | End-to-end estimate on a synthetic ARKit capture (values within physical bounds, totals consistent, budget numbers match MATH.md), vertical-stroke height route, unknown-food refusal, malformed-payload rejection |
-| `nutrition` | 3 | FDC ETL: data-type filtering, density derivation from cup portions (158 g/cup → 0.668 g/mL), FTS search |
-| **Total** | **27 passed** | `npm test`, 233 ms; CI runs the same suite on every push |
+| `packages/pipeline` | 15 | End-to-end estimate on a synthetic ARKit capture (values within physical bounds, totals consistent, budget numbers match MATH.md), vertical-stroke height route, unknown-food refusal, malformed-payload rejection; plus the propose→confirm edit helpers — portion rescale, relabel (matched/unknown/Atwater), totals, and the schema-re-validating `withEditedItem` |
+| `nutrition` | 11 | FDC ETL: data-type filtering, density derivation from cup portions (158 g/cup → 0.668 g/mL), FTS search, `shape_priors` seeding + `priors.json` ingestion; and the `SqliteNutrientStore` — label resolution (exact/FTS/alias), water-density fallback, null-on-miss, end-to-end mass→nutrition |
+| **Total** | **46 passed** | `npm test`; CI runs the same suite on every push |
 
 **2. Physical validation (pending device build).**
 
@@ -150,13 +150,16 @@ Three layers. Results are recorded here as each layer runs; unit results are cur
 | P0 — ruler accuracy | 10 known objects × 3 angles × 2 lighting, stroke vs tape measure | median ≤ 5 mm on 20 cm spans | *pending* |
 | P1 — geometry-only mass | ~30 home meals, kitchen-scale truth, placeholder segmentation | median mass error ≤ 25% | *pending* |
 
-**3. Model benchmarks (pending H100 runs).**
+**3. Model benchmarks.**
 
 | Benchmark | Metric | Baselines to beat | Result |
 |---|---|---|---|
-| FoodSeg103 val | mIoU | public checkpoints ≤ 0.05; competent B0 ≈ 0.25, B1 ≈ 0.32 | *pending* |
-| Nutrition5k test split | calorie MAPE | 26.1% (RGB) / 16.5% (RGB+depth) | *pending* |
+| FoodSeg103 val | mIoU | public checkpoints ≤ 0.05; competent B0 ≈ 0.25, B1 ≈ 0.32 | **0.246** (nvidia/mit-b0) ✅ |
+| Nutrition5k test split | mass MAPE | — | **24.1%** (within the §8 ~20–30% budget) |
+| Nutrition5k test split | calorie MAPE (regressor kcal head) | 26.1% (RGB) / 16.5% (RGB+depth) | **~32%** — see note |
 | End-to-end vs NutriBench-style meals | macro accuracy | GPT-4o+CoT ≈ 66.8% Acc@7.5g carbs | *pending* |
+
+> **Regressor note** (first run: `mobilenetv3_large_100`, 50 epochs, n=3,484). Mass MAPE **24.1%** lands inside the MATH.md §8 physics budget — and it's the number that drives *shipped* calories, since production computes calories as **mass → classify → USDA kcal/g**, not from the auxiliary kcal head. The direct kcal head (**~32%**) is above the RGB baseline: predicting calories directly is harder (caloric density varies ~60× across foods) and the model is untuned. The improvement plan (augmentation, loss weighting, backbone, feature normalization) is in the [Mass Regressor vault note](docs/vault/Mass%20Regressor%20Model.md).
 
 ## Training on cloud GPUs
 

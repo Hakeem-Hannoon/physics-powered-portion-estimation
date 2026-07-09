@@ -56,5 +56,29 @@ Reads the manifest CSV from [[Shape Priors and Nutrition5k]] (columns `image_pat
 
 Targets: beat **26.1%** calorie MAPE (RGB baseline); approach **16.5%** (depth baseline). Landing between them is the expected, honest outcome. Runtime ~1–2 h on an H100. Export via `model/export/export_coreml.py` (Core ML fp16) / ExecuTorch `.pte`. **~5.5 M params**, expected ≤ 10 ms on the Neural Engine ([[HARDWARE]]).
 
+## Results — first run (2026-07-09)
+
+`mobilenetv3_large_100`, 50 epochs, batch 128, n=3,484 dishes, geometry fit at κ=0.1687 ([[Shape Priors and Nutrition5k]]):
+
+| Metric | Result | Baseline / budget |
+|---|---|---|
+| **mass MAPE** | **24.1%** | inside the MATH.md §8 ~20–30% budget ✅ |
+| **kcal MAPE** (aux head) | **~32%** | 26.1% RGB / 16.5% depth — *not yet beaten* |
+
+**Read it honestly.** Mass 24.1% is the number that matters — production computes calories as **mass → classify → USDA kcal/g** ([[Nutrition Database]]), not from the auxiliary kcal head. The direct kcal head (~32%) trails the RGB baseline because predicting calories directly also requires inferring caloric density from appearance (lettuce ≈ 0.15 vs oil ≈ 9 kcal/g — a ~60× spread). Loss fell 0.83 → 0.24 and plateaued ~epoch 48, so it's converged, not under-trained. Since the model *conditions on depth-derived geometry*, it has depth-baseline-caliber information (16.5%) available — it's leaving some on the table, which the experiments below aim to recover.
+
+## Improving the model (next experiments)
+
+Ordered by expected payoff / effort. All edits are in `model/train/mass_regressor_nutrition5k.py`; re-run notebook 03's train cell and compare `mass MAPE` / `kcal MAPE`. Change **one lever at a time** and record the number.
+
+1. **Stronger augmentation** (cheap, high payoff on 3.5k examples). Today it's only a horizontal flip in `MealRegionDataset.__getitem__`. Add color jitter (brightness/contrast/saturation), a mild random-resized-crop, and a vertical flip (an *overhead* plate has no canonical up/down, so it's safe here — unlike a side view). This is the single most likely win on a small dataset.
+2. **Normalize the conditioning vector.** FiLM sees raw `[log(area), height, has_height, one-hot]`. Standardize `log(area)` and `height` to ~zero-mean/unit-var (compute stats over the train split, store them, apply in `__getitem__` and at inference). Un-normalized scalars make FiLM's job harder.
+3. **Loss weighting.** Both heads use equal `SmoothL1` on `[log_mass, log_kcal]`. Mass is the shipped target, so up-weight it (e.g. `2·mass + 1·kcal`), or drop the kcal head to a lighter auxiliary. Also try `metric_for_best_model` = mass vs. a mass/kcal blend.
+4. **Backbone / schedule.** Try `--backbone fastvit_t8` (also the ANE inference target) or a slightly larger `efficientnet_lite`; run a cosine schedule with warm restarts over ~80 epochs. The dummy-forward feature-dim code already handles any backbone.
+5. **Audit the geometry features.** Plot `area_m2` / `height_m` vs. `mass_g` from the manifest — confirm the signal is clean. The extraction uses approximate intrinsics (`fx=fy=615`); a *systematic* scale error is absorbed by the learned mapping, but per-dish *noise* in the plane fit is not. If noisy, tightening `analyze_depth` (better plane fit, outlier rejection) helps every downstream number.
+6. **Regularization.** Small dataset → try more dropout / weight-decay sweep; watch the train-vs-val gap for overfitting past epoch ~40.
+
+**How to measure success:** kcal MAPE < 26.1% clears the RGB baseline; approaching ~16.5% would match depth. But keep the mass MAPE as the primary shipped metric. If two levers each help, stack them and re-confirm.
+
 ## Related
 - [[Segmentation Model]] · [[Shape Priors and Nutrition5k]] · [[Training Pipeline]] · [[Math 4 - Volume Mass and Nutrients]] · [[The Problem and The Big Idea]] · [[CS Foundations]] · [[MODELS]]
