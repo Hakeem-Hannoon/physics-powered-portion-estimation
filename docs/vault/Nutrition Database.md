@@ -47,7 +47,7 @@ The pipeline's `NutrientStore.lookup(label)` returns a `FoodRecord { label, per1
 ## What's done, what's left
 
 - ✅ **Schema + reference store shipped.** The `shape_priors` table and a concrete Node `NutrientStore` (`openNutrientStore`) now exist, tested for resolution, density→mass→nutrition, and the null‑on‑miss rule. `nutrition/README.md` is reconciled with the shipped schema.
-- ⬜ **On‑device adapter.** The Node store is the reference; the real **`expo-sqlite`** `NutrientStore` for the app is still [[Roadmap and Next Steps]] item P2.
+- ✅ **On‑device adapter shipped.** `ExpoSqliteNutrientStore` (`apps/demo/src/nutrient-store.ts`) mirrors the Node store over **expo‑sqlite** and is wired into the demo, reading a bundled SQLite DB — real USDA nutrition, not the old single mock. A 12‑food **starter** bundle ships (`nutrition/starter/build-starter.mjs`); the full FDC bundle is `npm run etl:bundle`. Guide: `docs/REAL_ADAPTERS.md`.
 - ⬜ **Per‑food shape class.** Every food currently uses the `_global` prior; a per‑food *class* map (plus the fitted per‑class κ/φ/h̄ from [[Shape Priors and Nutrition5k]]) will refine it.
 - ⬜ **Label → FDC‑row map.** The store accepts a curated `aliases` map (the "quality‑critical artifact"); building the real one is pending.
 

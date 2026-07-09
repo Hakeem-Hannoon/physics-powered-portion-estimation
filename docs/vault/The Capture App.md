@@ -82,7 +82,7 @@ const payload = await PortionCapture.launch({ requireStroke: true });
 if (!payload) return;                 // cancelled
 setResult(await estimateMeal(payload, deps));   // real geometry, mock models
 ```
-`deps` injects a `CenterSquareSegmenter` (hard‑coded centered square), a `FixedClassifier` ("white rice, cooked"), and an `InMemoryNutrientStore` (rice: density 0.67, κ 0.1687). So the demo exercises **real geometry on a placeholder segmentation** — you can cook rice, weigh it, capture with a ≥10 cm stroke, and compare the app's grams to a kitchen scale (the P1 drill).
+`deps` now injects **real nutrition**: an `ExpoSqliteNutrientStore` (expo‑sqlite over the bundled `assets/nutrients.sqlite`, 12 real USDA foods) plus a `SelectedClassifier` (the food you pick in the chip row — the interim for the on‑device MobileCLIP classifier, whose matching logic is the tested `ZeroShotClassifier`), on top of the still‑placeholder `CenterSquareSegmenter`. So the demo exercises **real geometry + real nutrition on a placeholder segmentation** — pick the food, cook and weigh it, capture with a ≥10 cm stroke, and compare the app's grams to a kitchen scale (the P1 drill). Adapter details + how to wire the vision models: `docs/REAL_ADAPTERS.md`.
 
 ## Related
 - [[Math 2 - The Ruler]] · [[System Architecture]] · [[The Pipeline]] · [[Geometry Library]] · [[Testing]] · [[ARCHITECTURE]] · [[HARDWARE]]

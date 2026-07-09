@@ -13,6 +13,7 @@ tags: [ppe, codebase, pipeline]
 | `contracts.ts` | the zod schemas: `capturePayloadSchema` (input) and `estimateResultSchema` (output), plus their inferred TS types |
 | `adapters.ts` | the interfaces the app must implement: `Segmenter`, `Classifier`, `NutrientStore`, `DepthProvider` |
 | `estimate.ts` | `estimateMeal()` — the whole orchestration |
+| `zero-shot.ts` | `ZeroShotClassifier` — real MobileCLIP‑style classification (cosine‑match crop vs. precomputed text embeddings + softmax), tested; the image encoder is injected (`docs/REAL_ADAPTERS.md`) |
 | `mocks.ts` | `FixedSegmenter`, `FixedClassifier`, `InMemoryNutrientStore` for tests/demo |
 
 Depends on `@ppe/geometry` (by source) and `zod`. See [[System Architecture]] for how it sits between capture and the models.

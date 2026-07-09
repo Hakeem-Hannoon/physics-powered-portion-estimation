@@ -58,12 +58,19 @@ Status legend: ✅ trained/shipped · 🟡 pending run · ⬜ not started.
 | **Weights artifact** | HF (image encoder, Core ML). **Text-side embeddings** of the vocab are computed offline and shipped as an asset — treat that `.npy`/table as a versioned artifact too. |
 | **License note** | `apple-ascl` — review before App Store submission. |
 
+**Matching logic:** ✅ implemented + tested — `ZeroShotClassifier`
+(`packages/pipeline/src/zero-shot.ts`, 7 tests): cosine-match crop embedding vs.
+precomputed text embeddings + softmax. The on-device image **encoder** is the
+remaining device+model piece. Integration guide: [`REAL_ADAPTERS.md`](REAL_ADAPTERS.md) §2.
+
 **Versions**
 
 | Ver | Date | Weights | Config | Metric | Status |
 |---|---|---|---|---|---|
-| v0 | — | `apple/coreml-mobileclip` (S0, HF) | zero-shot; vocab = FoodSeg103 labels + FDC descriptions | ~88–90% top-1 Food-101 (class-level) | ⬜ not wired |
-| text | — | `food-vocab-embeddings-v0.npy` (Drive) | prompt-ensembled offline | — | ⬜ |
+| logic | 2026-07-09 | — (pure, in `@ppe/pipeline`) | cosine + softmax zero-shot | tested | ✅ |
+| encoder | — | `apple/coreml-mobileclip` (S0, HF) | Core ML / ExecuTorch image head | ~88–90% top-1 Food-101 | 🟡 needs export + device |
+| text | — | `food-vocab-embeddings-v0.json` (asset) | prompt-ensembled offline | — | ⬜ |
+| interim | 2026-07-09 | — | `SelectedClassifier` food picker (real nutrition, confirmed label) | — | ✅ demo |
 
 ---
 
@@ -129,11 +136,19 @@ Status legend: ✅ trained/shipped · 🟡 pending run · ⬜ not started.
 
 ---
 
-## Not a model, but shipped weights-adjacent
+## Nutrient bundle (data artifact — real, shipped)
 
-- **Nutrient bundle** — `nutrition/` ETL → SQLite (per-100 g nutrients + densities,
-  FTS-indexed). Data artifact, ~15–30 MB app asset; versioned by FDC release. Not
-  in this registry's tables but tracked in STATUS.md §5.4.
+The `NutrientStore` adapter is **real and wired into the demo** (`ExpoSqliteNutrientStore`,
+`apps/demo/src/nutrient-store.ts`), reading a bundled SQLite database instead of
+the hard-coded mock. See [`REAL_ADAPTERS.md`](REAL_ADAPTERS.md) §1.
+
+| Ver | Date | Artifact | Contents | Status |
+|---|---|---|---|---|
+| starter | 2026-07-09 | `apps/demo/assets/nutrients.sqlite` (~24 KB) | 12 common foods, real USDA per-100 g + 5 densities + `_global` prior | ✅ shipped in demo |
+| full | — | build via `npm run etl:bundle` over the FDC export | ~15k foods, FTS5-indexed, ~15–30 MB | ⬜ (needs FDC download) |
+
+Source of the starter set: `nutrition/starter/build-starter.mjs` (runs the same
+`buildBundle` as the full ETL); rebuild with `npm run build:nutrients`.
 
 ## Reproduce / re-export any model
 
