@@ -17,8 +17,10 @@ The demo now reads **real USDA FoodData Central** nutrition from a bundled SQLit
 database instead of the single hard-coded rice record.
 
 - **Bundle:** `apps/demo/assets/nutrients.sqlite` — a curated *starter* set of 12
-  common foods with real per-100 g values + portion-derived densities and the
-  fitted `_global` shape prior (κ=0.1687, φ=0.446). Rebuild with
+  common foods with real per-100 g values + portion-derived densities, a
+  **per-food `shape_class`** (mound/flat — bread & salmon use the flat slab
+  route), and per-class shape priors seeded from MATH.md §4 (the fitted per-class
+  κ/φ/h̄ from Nutrition5k override them once available). Rebuild with
   `npm run build:nutrients` (source: `nutrition/starter/build-starter.mjs`).
 - **Store:** `ExpoSqliteNutrientStore` mirrors the Node reference store
   (`nutrition/etl/nutrient-store.mjs`) exactly — same schema, same resolution
@@ -28,9 +30,11 @@ database instead of the single hard-coded rice record.
 - **Production bundle:** run the full ETL over the real FDC CSV export (~15k
   foods) instead of the starter set — `npm run etl:bundle -- --fdc-dir ./fdc-csv
   --out apps/demo/assets/nutrients.sqlite` (download: <https://fdc.nal.usda.gov/download-datasets/>).
-- **Label mapping** (the "quality-critical data artifact"): `FOOD_ALIASES` in
-  `apps/demo/src/foods.ts` maps terse classifier labels ("rice") to bundle
-  descriptions ("Rice, white, cooked"). Grow it as the vocabulary grows.
+- **Label mapping** (the "quality-critical data artifact"): `nutrition/label-map.json`
+  — the curated map of terse classifier labels + synonyms ("rice", "grilled
+  chicken") → FDC descriptions. It's copied next to the DB by `npm run build:nutrients`
+  and loaded as the store's `aliases` (`FOOD_ALIASES` in `apps/demo/src/foods.ts`).
+  Grow it toward the full FoodSeg103 vocabulary once the classifier vocab is fixed.
 
 ## 2. Classification — MobileCLIP zero-shot (needs the model)
 

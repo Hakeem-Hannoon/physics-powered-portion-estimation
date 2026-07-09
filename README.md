@@ -6,6 +6,40 @@ An end-to-end meal-photo nutrition estimator whose portion step is grounded in m
 
 Built by [Spotter Labs](https://spotter-labs.com) to power meal logging in the **Spotter** app; packaged as a standalone library any app can adopt.
 
+## How it fits together
+
+The app is a short pipeline from a finger on glass to a plate of numbers. Five
+blocks, each swappable behind a narrow interface:
+
+| Block | Where | What it does |
+|---|---|---|
+| **Capture** | [`modules/expo-portion-capture`](modules/expo-portion-capture) | Native AR screen: aim, tap‑hold‑drag the AR ruler across the plate, shoot. Emits a versioned **`CapturePayload`** — image + camera intrinsics + pose + table plane + ruler strokes + depth (when present). |
+| **Geometry** | [`packages/geometry`](packages/geometry) | The metric math as pure, zero‑dependency code (pinhole camera, plane homography, area → volume → mass). Not a model — ~300 lines, unit‑tested to float precision. |
+| **Pipeline** | [`packages/pipeline`](packages/pipeline) | `estimateMeal(payload, deps)`: **segment → classify → portion (geometry) → nutrients**, behind zod‑validated contracts and four adapter interfaces (`Segmenter`, `Classifier`, `NutrientStore`, `DepthProvider`). |
+| **Models + data** | [`model/`](model), [`nutrition/`](nutrition) | The learned/curated pieces the adapters plug in: segmentation, classification, the scale‑conditioned **mass regressor**, shape priors, and the USDA **nutrient bundle** (SQLite). |
+| **Demo** | [`apps/demo`](apps/demo) | Wires it end‑to‑end on a real device (the P0/P1 validation drills). |
+
+**The flow, end to end:**
+
+1. **Capture** — the AR ruler pins the scene's **metric scale** from the phone's
+   IMU (physics, not a neural net's guess), and the shutter freezes the image
+   with everything the math needs.
+2. **Segment + classify** — the pipeline finds each food region and labels it
+   (on‑device models; see [`docs/REAL_ADAPTERS.md`](docs/REAL_ADAPTERS.md)).
+3. **Portion — the physics** — pure geometry turns the measured scale into metric
+   **area → volume → mass** per region (the step a lone 2D photo can't do).
+4. **Nutrients** — the label resolves to per‑100 g USDA values in the bundled
+   database; `mass × per‑100 g` → calories/macros/micros, with a **propagated
+   error band** and an Atwater cross‑check.
+5. **Propose → confirm** — every number is a labeled, editable estimate: the
+   system proposes, the user confirms, and only then is it logged.
+
+The one idea to internalize: **the portion step is measured geometry, not a
+guess** — the AR‑ruler scale is the input no RGB‑only calorie app has, and it's
+what moves calorie error from ~26% (RGB) toward ~16% (metric depth). Full
+derivations in [`docs/MATH.md`](docs/MATH.md); the shape of the system in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ## The problem this solves
 
 Meal-photo calorie apps share one dominant failure mode, and food recognition is innocent:
