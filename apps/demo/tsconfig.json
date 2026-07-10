@@ -3,5 +3,5 @@
   "compilerOptions": {
     "strict": true
   },
-  "include": ["App.tsx"]
+  "include": ["App.tsx", "src/**/*.ts", "src/**/*.tsx", "declarations.d.ts"]
 }

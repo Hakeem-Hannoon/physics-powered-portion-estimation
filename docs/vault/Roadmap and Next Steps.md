@@ -33,7 +33,7 @@ Be the portion‑estimation engine for **Spotter** meal logging, and stand alone
 
 1. ✅ **Wire the fitted priors — done.** The Nutrition5k global fit (κ=0.1687, φ=0.446, h̄=0.098 m, n=3484) is now `DEFAULT_KAPPA`/`DEFAULT_MOUND_PHI` in [[The Pipeline]], the ETL's default `shape_priors`, and committed as `model/priors/priors.json`. Per‑class κ/φ await per‑class labels.
 2. **iOS capture parity** — the §2.4 stabilization + the R1–R9 capture‑quality pass are now ported (accuracy parity); what remains is the reticle + plate‑trackpad **interaction** redesign, then run P0 on iPhone. iPhone Pro also unlocks the LiDAR height‑field volume route. → [[The Capture App]], `docs/CAPTURE_QUALITY.md`.
-3. **Real model adapters** — replace the mocks: `Segmenter` (SAM 2.1‑tiny Core ML / SegFormer via ExecuTorch), `Classifier` (MobileCLIP zero‑shot), `DepthProvider` (LiDAR). De‑risk the Android ExecuTorch custom‑model path first. → [[Segmentation Model]]
+3. ✅ **Real model adapters — done (the vision stack is on‑device).** The demo now **classifies + weighs end‑to‑end**, no picker: `Classifier` = MobileCLIP‑S0 zero‑shot (validated 6/6 top‑1), `Segmenter` = SlimSAM point‑prompt (SAM math reproduced in Node), both via `onnxruntime‑react‑native` (one cross‑platform ONNX per model — chosen *instead* of the ExecuTorch path, which de‑risks it). Preprocessing is pure, tested code in [[The Pipeline]] (`preprocess.ts`). Remaining: the P2 on‑device drill, then `DepthProvider` (LiDAR). → [[Segmentation Model]], `docs/REAL_ADAPTERS.md`.
 4. **On‑device nutrient bundle** — run the ETL over real FDC CSVs, ship the SQLite as an asset, implement `NutrientStore` over expo‑sqlite, and curate the **label → FDC‑row** mapping (the quality‑critical artifact). → [[Nutrition Database]]
 5. **Core ML / ExecuTorch export + inference wiring** — notebook 04 exports; wire and benchmark on‑device. → [[Training Pipeline]]
 6. **Confirm/edit UI** — adjust the outline, swap the label, tweak portions before logging. *(The deterministic core is done: `rescaleItemToMass` / `relabelItem` / `withEditedItem` in `@ppe/pipeline` — [[The Pipeline]] → "Editing an estimate". What remains is the app-side UI.)*
@@ -46,7 +46,7 @@ Be the portion‑estimation engine for **Spotter** meal logging, and stand alone
 |---|---|---|
 | **P0** ruler accuracy | the physics on real hardware (≤ 5 mm) | 🟡 ready to run |
 | **P1** geometry‑only mass | the metric pipeline on real food (≤ 25%) | 🟡 pending P0 |
-| **P2** models in | on‑device segment + classify wired | ⬜ |
+| **P2** models in | on‑device segment + classify wired | 🟡 wired + Node‑validated (classify 6/6; SAM bbox reproduced); on‑device drill next |
 | **P3** the regressor | scale‑conditioned regression, A/B | 🟡 v0 trained (mass 24.1%); v1 residual + scale‑parity implemented, A/B run pending |
 | **P4** benchmark + integrate | Nutrition5k numbers; live in Spotter | ⬜ |
 

@@ -1,6 +1,6 @@
 # Project Status & Roadmap
 
-The single source of truth for where this project stands. Updated 2026-07-09.
+The single source of truth for where this project stands. Updated 2026-07-10.
 
 Companion docs: [`../README.md`](../README.md) (overview) · [`MATH.md`](MATH.md) (derivations) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (system design) · [`MODELS.md`](MODELS.md) (model landscape) · [`HARDWARE.md`](HARDWARE.md) (sensors/devices) · [`CAPTURE_QUALITY.md`](CAPTURE_QUALITY.md) (image-capture audit + R1–R9).
 
@@ -85,7 +85,12 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 
 1. ✅ **Wire the fitted priors — done.** κ=0.1687 / φ=0.446 / h̄=0.098 m (n=3,484) are now `DEFAULT_KAPPA`/`DEFAULT_MOUND_PHI` in `@ppe/pipeline`, the ETL's default `shape_priors`, and `model/priors/priors.json`. Per-class values await per-class labels.
 2. 🟡 **iOS capture parity** — the §2.4 stabilization stats + capture-quality pass (R1–R9) are now ported, so iOS is at **accuracy** parity under its existing tap-drag UI. Remaining: the reticle + plate-trackpad **interaction** redesign (finger-never-covers-food), then dev-build and run P0 on iPhone. iPhone Pro (LiDAR) additionally unlocks the measured height-field volume route (highest-accuracy tier).
-3. 🟡 **Real model adapters** — replace the mocks behind the pipeline interfaces (guide: `docs/REAL_ADAPTERS.md`). Done: **`NutrientStore`** (real, see item 4) and the **`Classifier` matching logic** (`ZeroShotClassifier`, tested). Pending device+model: the `Classifier` **image encoder** (MobileCLIP Core ML/ExecuTorch), `Segmenter` (SAM 2.1-tiny / SegFormer fine-tune — `MaskSegmenter` scaffold ready), and `DepthProvider` (LiDAR iOS; Android Depth16). Highest-risk unknown: the Android ExecuTorch custom-model path — de-risk first.
+3. ✅ **Real model adapters — the vision stack is on-device.** The demo now **classifies the food and weighs it end-to-end** with no picker (guide: `docs/REAL_ADAPTERS.md`):
+   - **`Classifier`** — MobileCLIP-S0 zero-shot (ONNX image encoder + precomputed text embeddings). **Validated 6/6 top-1** on real photos through the shipped preprocessing.
+   - **`Segmenter`** — SlimSAM (SAM-2.1-tiny-class) point-prompted at the frame center; a hand-coded Node run of the shipped math reproduced transformers.js's mask bbox to the pixel. Falls back to a centered square on failure.
+   - **`NutrientStore`** — real (see item 4).
+   - **Runtime decision:** `onnxruntime-react-native` (one cross-platform ONNX per model) instead of the ExecuTorch custom-model path — this *is* the de-risking of that "highest-risk unknown". The platform-agnostic preprocessing lives in `@ppe/pipeline` (`preprocess.ts`, 13 tests).
+   - **Remaining:** on-device runtime validation (the P2 drill — mask quality on real captures, latency), then `DepthProvider` (LiDAR iOS; Android Depth16) for the highest-accuracy volume route.
 4. 🟡 **On-device nutrient bundle** — **done for the demo**: `ExpoSqliteNutrientStore` over expo-sqlite reads a bundled SQLite DB (`apps/demo/assets/nutrients.sqlite`), with **per-food shape classes** (mound/flat resolution) and the curated label→FDC map (`nutrition/label-map.json`). A 12-food **starter** bundle ships now (`nutrition/starter/build-starter.mjs`); the full ~15k-food FDC bundle (`npm run etl:bundle`) and the fitted **per-class** κ/φ/h̄ are the remaining steps.
 5. ⬜ **Core ML / ExecuTorch export + inference wiring** — notebook 04 exports; wire the exported models into the module and benchmark on-device latency.
 6. ⬜ **Confirm/edit UI** — adjust the segment outline, swap the label, tweak portions before logging (the contract already anticipates this).
@@ -110,7 +115,7 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 |---|---|---|
 | **P0** — ruler accuracy | The physics on real hardware (≤ 5 mm on 20 cm) | 🟡 ready to run on device |
 | **P1** — geometry-only mass | The metric pipeline on real food (≤ 25% mass) | 🟡 pending P0 |
-| **P2** — models in | On-device segmentation + classification wired | ⬜ |
+| **P2** — models in | On-device segmentation + classification wired | 🟡 wired + Node-validated (classify 6/6; SAM bbox reproduced); on-device drill next |
 | **P3** — the regressor | Scale-conditioned mass regression, A/B vs geometry | 🟡 trained (mass 24.1%); tuning + A/B next |
 | **P4** — benchmark + integrate | Nutrition5k/NutriBench numbers; live in Spotter | ⬜ |
 

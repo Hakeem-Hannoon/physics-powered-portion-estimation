@@ -7,7 +7,9 @@
     "start": "expo start --dev-client",
     "ios": "expo run:ios",
     "android": "expo run:android",
-    "build:nutrients": "node --experimental-sqlite ../../nutrition/starter/build-starter.mjs --out assets/nutrients.sqlite --priors ../../model/priors/priors.json"
+    "build:nutrients": "node --experimental-sqlite ../../nutrition/starter/build-starter.mjs --out assets/nutrients.sqlite --priors ../../model/priors/priors.json",
+    "build:models": "node scripts/fetch-models.mjs",
+    "build:vocab": "node scripts/build-vocab-embeddings.mjs"
   },
   "dependencies": {
     "@ppe/geometry": "file:../../packages/geometry",
@@ -17,10 +19,13 @@
     "expo-constants": "~17.1.8",
     "expo-file-system": "~18.1.11",
     "expo-font": "~13.3.2",
+    "expo-image-manipulator": "~13.1.7",
     "expo-keep-awake": "~14.1.4",
     "expo-portion-capture": "file:../../modules/expo-portion-capture",
     "expo-sqlite": "~15.2.14",
     "expo-status-bar": "~2.2.0",
+    "jpeg-js": "^0.4.4",
+    "onnxruntime-react-native": "1.20.0",
     "react": "19.0.0",
     "react-native": "0.79.6",
     "zod": "^3.25.0"

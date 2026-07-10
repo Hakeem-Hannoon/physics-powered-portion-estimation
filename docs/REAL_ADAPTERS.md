@@ -1,15 +1,38 @@
 # Real model adapters — integration guide
 
-How the demo replaces the three mock adapters with real ones, what's shipped
-today, and exactly how to wire the two that need on-device models. The adapter
-interfaces are in `packages/pipeline/src/adapters.ts`; this is the guide to
-implementing them for real.
+All three model adapters behind the pipeline are now **real and on-device** — the
+demo classifies the food and weighs it end-to-end with no picker. This is the
+guide to how they're wired. The adapter interfaces are in
+`packages/pipeline/src/adapters.ts`.
 
 | Adapter | Interface | Status | Where |
 |---|---|---|---|
 | **NutrientStore** | `lookup(label) → FoodRecord \| null` | ✅ **real & shipped** | `apps/demo/src/nutrient-store.ts` (expo-sqlite) |
-| **Classifier** | `classify(uri, region) → {label, confidence, topK}` | 🟡 interim = food picker; real logic tested | `ZeroShotClassifier` (`@ppe/pipeline`) + `apps/demo/src/vision-adapters.ts` |
-| **Segmenter** | `segment(uri, size) → Region[]` | 🟡 placeholder = centered square | `MaskSegmenter` (`apps/demo/src/vision-adapters.ts`) |
+| **Classifier** | `classify(uri, region) → {label, confidence, topK}` | ✅ **real & shipped** | MobileCLIP-S0 zero-shot: `ZeroShotClassifier` (`@ppe/pipeline`) + `clip-embedder.ts` |
+| **Segmenter** | `segment(uri, size) → Region[]` | ✅ **real & shipped** | SlimSAM point-prompt: `sam-segmenter.ts` |
+
+**Runtime:** `onnxruntime-react-native` — one ONNX artifact per model, running on
+both iOS and Android. This was chosen over the ExecuTorch custom-model path
+(MODELS.md's "highest-risk unknown"): a single cross-platform ONNX per model
+de-risks the on-device story. The weights are a native dependency, so enabling
+them is a dev rebuild (`npx expo run:android` / `run:ios`) after fetching them
+(`npm run build:models`). The platform-agnostic preprocessing + coordinate math is
+pure, unit-tested code in `@ppe/pipeline` (`preprocess.ts`); the demo owns only
+the RN I/O (JPEG decode via jpeg-js, native crop/resize via expo-image-manipulator,
+the onnxruntime session in `onnx.ts`).
+
+**Validation before shipping:** the exact preprocessing + models were verified in
+Node against transformers.js — MobileCLIP zero-shot scored **6/6 top-1** on real
+food photos through this pipeline, and a hand-coded run of the SAM math reproduced
+transformers.js's mask bounding box to within a few pixels. The remaining
+on-device unknowns (runtime glue, mask quality on real captures) are exactly what
+the P2 device drill certifies.
+
+**Files:** `vision-adapters.ts` (composition root: `loadVisionDeps()`),
+`clip-embedder.ts` (`ImageEmbedder`), `sam-segmenter.ts` (`Segmenter`),
+`image-io.ts` (decode/crop/resize), `onnx.ts` (session loading),
+`scripts/fetch-models.mjs` (weights), `scripts/build-vocab-embeddings.mjs` (text
+embeddings).
 
 ## 1. Nutrition — done (real USDA data)
 
@@ -36,51 +59,63 @@ database instead of the single hard-coded rice record.
   and loaded as the store's `aliases` (`FOOD_ALIASES` in `apps/demo/src/foods.ts`).
   Grow it toward the full FoodSeg103 vocabulary once the classifier vocab is fixed.
 
-## 2. Classification — MobileCLIP zero-shot (needs the model)
+## 2. Classification — MobileCLIP-S0 zero-shot (shipped)
 
-The **matching logic is real and unit-tested**: `ZeroShotClassifier`
-(`packages/pipeline/src/zero-shot.ts`) embeds the food crop, cosine-matches it
-against precomputed **text** embeddings of the food vocabulary, and softmaxes the
-scores. What's missing is the on-device **image encoder** — a device+model piece:
+`ZeroShotClassifier` (`packages/pipeline/src/zero-shot.ts`) embeds the food crop
+with an injected image encoder, cosine-matches it against precomputed **text**
+embeddings of the food vocabulary, and softmaxes the scores. Both halves are now
+real:
 
-1. **Export MobileCLIP** (S0) image encoder to Core ML (iOS) and/or ExecuTorch
-   (Android). See MODELS.md §2 (`apple/coreml-mobileclip`).
-2. **Precompute text embeddings** for the food vocabulary offline with the CLIP
-   *text* encoder (FoodSeg103 labels + FDC descriptions, prompt-ensembled) and
-   ship them as an asset, e.g. `assets/food-vocab-embeddings.json`
-   (`{label, embedding}[]`).
-3. **Implement the injected `ImageEmbedder`** — crop `region`, resize to the
-   encoder input, run the model, return the L2-normalized embedding.
-4. **Wire it:** `makeClipClassifier(encodeImage, vocab)` in `vision-adapters.ts`.
+1. **Image encoder** — MobileCLIP-S0's vision head, exported to ONNX
+   (`Xenova/mobileclip_s0`, `onnx/vision_model.onnx`), fetched to
+   `assets/models/mobileclip_s0_vision.onnx` by `npm run build:models`. The
+   injected `ImageEmbedder` (`clip-embedder.ts`) crops the region, resizes to
+   256×256, and packs the tensor with `packClipTensor` — **rescale-only**, no
+   ImageNet mean/std (MobileCLIP's `preprocessor_config` has `do_normalize:false`).
+2. **Text embeddings** — precomputed offline (prompt-ensembled + L2-normalized)
+   into `assets/food-vocab-embeddings.json` (`{label, embedding}[]` under `vocab`),
+   regenerable with `npm run build:vocab`. The vocab is the 12 starter-bundle
+   labels, resolved to FDC rows via `nutrition/label-map.json`.
+3. **Wiring:** `makeClipClassifier(createClipEmbedder(session))` in
+   `vision-adapters.ts` (`loadVisionDeps()`).
 
-Until then the demo uses `SelectedClassifier` (the food picker) so you still get
-real nutrition for the real measured portion — the label is confirmed, not
-predicted.
+Validated: **6/6 top-1** on real photos (rice, chicken, broccoli, egg, banana,
+apple…) through this exact preprocessing. The label is *predicted*; the UI lets
+the user correct it (propose→confirm via `relabelItem`/`withEditedItem`).
 
-## 3. Segmentation — SAM 2.1 / SegFormer (needs the model)
+## 3. Segmentation — SlimSAM point-prompt (shipped)
 
-`MaskSegmenter` (`vision-adapters.ts`) takes an injected `SegmentationRunner`
-(`image → boolean mask`) and converts the mask to a `Region` via
-`maskToBoundingPolygon` (a robust bounding polygon; a marching-squares contour
-trace is the accuracy upgrade). To enable:
+`sam-segmenter.ts` runs **SlimSAM** (a SAM-2.1-tiny-class promptable model,
+`Xenova/slimsam-77-uniform`) via two ONNX sessions:
 
-1. **Export the model:** SAM 2.1-tiny Core ML (the ruler tap is the point prompt)
-   on iOS, or the **SegFormer-B0 fine-tune** (mIoU 0.246, `MODELS_REGISTRY.md`
-   Stage 1) via ExecuTorch on Android.
-2. **Implement `SegmentationRunner`** — run the model, threshold to a foreground
-   `mask[y][x]` in the stored image's pixel space.
-3. **Wire it:** `new MaskSegmenter(runSeg)` in `deps` (App.tsx).
+1. **Vision encoder** (`slimsam_vision_encoder.onnx`) — the frame is resized to
+   SAM's 1024 letterbox (`samResizeTarget`) and normalized+padded by
+   `packSamTensor` (ImageNet mean/std, zero-pad bottom/right).
+2. **Mask decoder** (`slimsam_decoder.onnx`) — prompted with a single point at the
+   frame center (the capture UX centers the food; the ruler-tap pixel is the
+   documented upgrade) and the encoder's embeddings. Its multimask output is
+   reduced to the food region's bounding polygon in stored-image pixels
+   (`pickBestMaskIndex` avoids the whole-plate mask; `maskGridToImagePolygon` maps
+   the low-res grid back through the letterbox), from which the pipeline computes
+   metric area via the plane homography.
 
-The centered-square placeholder is intentional for the P1 drill: it exercises the
-**real** metric geometry (ruler → homography → area → volume → mass) so you can
-validate grams against a kitchen scale before the segmentation model lands.
+All the numeric math is pure, unit-tested code in `@ppe/pipeline`
+(`preprocess.ts`). A hand-coded Node run of it reproduced transformers.js's SAM
+mask bbox to within a few pixels. On any failure the adapter falls back to a
+centered square, so classification + the metric geometry (weight) still run — the
+P1 drill's intended behavior.
 
 ## Runtimes & build
 
-- **iOS:** Core ML via a native module (the capture module already establishes
-  the native-module pattern).
-- **Android:** `react-native-executorch` (`npx expo install react-native-executorch`)
-  loads the exported `.pte`. MODELS.md §1 notes the SegFormer fine-tune rides its
-  custom-model path.
-- Adding either is a **native rebuild** (`npx expo run:android` / `run:ios`), and
-  both need the exported model artifacts bundled — neither ships in this repo yet.
+- **Both platforms:** `onnxruntime-react-native` runs the same `.onnx` artifacts
+  on iOS and Android — no per-platform export, no ExecuTorch/`.pte` custom-model
+  path. `int64` decoder labels rely on Hermes `BigInt64Array` (RN 0.79).
+- The weights (~80 MB total) are **gitignored**; fetch them with
+  `npm run build:models` (dependency-free) before building. Metro bundles them as
+  assets (`metro.config.js` adds `onnx` to `assetExts`); `onnx.ts` resolves the
+  asset to a file path for `InferenceSession.create`.
+- Bundling the models is a **native rebuild** (`npx expo run:android` / `run:ios`),
+  not a hot reload.
+- **Accuracy upgrades (backlog):** a marching-squares contour (vs. bbox) for the
+  SAM region; the ruler-tap pixel as the point prompt; per-class κ/φ; the LiDAR
+  height-field route on iPhone Pro.
