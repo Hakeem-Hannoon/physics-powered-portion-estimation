@@ -39,20 +39,33 @@ embeddings).
 The demo now reads **real USDA FoodData Central** nutrition from a bundled SQLite
 database instead of the single hard-coded rice record.
 
-- **Bundle:** `apps/demo/assets/nutrients.sqlite` — a curated *starter* set of 58
-  common foods with real per-100 g values + portion-derived densities, a
-  **per-food `shape_class`** (mound/flat — bread & salmon use the flat slab
-  route), and per-class shape priors seeded from MATH.md §4 (the fitted per-class
-  κ/φ/h̄ from Nutrition5k override them once available). Rebuild with
-  `npm run build:nutrients` (source: `nutrition/starter/build-starter.mjs`).
+- **Bundle:** `apps/demo/assets/nutrients.sqlite` — the **full generic-food FDC
+  database** (Foundation + SR Legacy + FNDDS ≈ 13.7k foods, ~55% with a
+  portion-derived density) with the curated 58-food set **overlaid on top**, so
+  the classifier vocabulary keeps resolving to its hand-checked rows
+  (per-100 g values, densities, and a **per-food `shape_class`** — bread &
+  salmon use the flat slab route) while everything else gains real USDA rows
+  for search and future vocabulary growth. Per-class shape priors are seeded
+  from MATH.md §4 + the fitted Nutrition5k globals. Rebuild with
+  `npm run build:nutrients:full -- <dir with the unzipped per-type FDC CSV
+  exports>` (download the Foundation / SR Legacy / FNDDS zips from
+  <https://fdc.nal.usda.gov/download-datasets/>; the all-types download is
+  gigabytes of branded foods the build filters out anyway). The curated set
+  alone: `npm run build:nutrients`.
+- **Density derivation handles all three real FDC portion encodings** —
+  Foundation's `measure_unit_id`, SR Legacy's free-text `modifier`
+  ("cup, diced"), FNDDS's `portion_description` ("1/2 cup") — a parser that
+  reads only measure ids sees almost no densities on real data (that bug is
+  fixed and regression-tested). Foods without any volumetric portion fall back
+  to water density in the store, flagged by `density_source`.
 - **Store:** `ExpoSqliteNutrientStore` mirrors the Node reference store
   (`nutrition/etl/nutrient-store.mjs`) exactly — same schema, same resolution
   order (curated alias → exact description → FTS/LIKE), same "null = never invent
   nutrition" rule. On first launch it copies the read-only asset into
-  expo-sqlite's directory.
-- **Production bundle:** run the full ETL over the real FDC CSV export (~15k
-  foods) instead of the starter set — `npm run etl:bundle -- --fdc-dir ./fdc-csv
-  --out apps/demo/assets/nutrients.sqlite` (download: <https://fdc.nal.usda.gov/download-datasets/>).
+  expo-sqlite's directory. `meta.fts` says the FTS5 index is in the file; each
+  reader probes its own SQLite for fts5 support and silently degrades to LIKE
+  when missing (some `node:sqlite` builds lack it), so the bundle can never
+  make a runtime unreadable.
 - **Label mapping** (the "quality-critical data artifact"): `nutrition/label-map.json`
   — the map of terse classifier labels + synonyms ("carrot", "grilled chicken")
   → FDC descriptions. It's **generated** from the shared food set

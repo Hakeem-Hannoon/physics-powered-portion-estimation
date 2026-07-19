@@ -37,15 +37,76 @@ const NUTRIENT_COLUMNS = {
   1089: "iron100",
 };
 
-/** Volumetric household measures and their milliliters (US customary). */
-const MEASURE_ML = {
+/**
+ * Volumetric household measures and their milliliters (US customary). Keys
+ * cover FDC `measure_unit` names AND the free-text spellings SR Legacy and
+ * FNDDS rows use. Weight units ("oz") must never appear here — only "fl oz"
+ * is a volume.
+ */
+const UNIT_ML = {
   cup: 236.588,
   tablespoon: 14.787,
+  tbsp: 14.787,
   teaspoon: 4.929,
+  tsp: 4.929,
+  "fluid ounce": 29.574,
   "fl oz": 29.574,
   liter: 1000,
+  litre: 1000,
   milliliter: 1,
+  ml: 1,
 };
+
+/**
+ * Unit text → mL, tolerating plurals, capitalization, and trailing qualifiers
+ * ("cup, diced", "Tablespoons"). Returns null for anything non-volumetric.
+ */
+function unitMl(text) {
+  const t = String(text ?? "").toLowerCase().trim();
+  if (!t) return null;
+  for (const [name, ml] of Object.entries(UNIT_ML)) {
+    if (t === name || t === `${name}s`) return ml;
+    if (t.startsWith(`${name} `) || t.startsWith(`${name},`)) return ml;
+    if (t.startsWith(`${name}s `) || t.startsWith(`${name}s,`)) return ml;
+  }
+  return null;
+}
+
+/** Portion quantity strings: "1", "0.5", "1/2", "1 1/2". */
+function parseQty(text) {
+  const t = String(text ?? "").trim();
+  let m = /^(\d+)\s+(\d+)\/(\d+)$/.exec(t);
+  if (m) return Number(m[1]) + Number(m[2]) / Number(m[3]);
+  m = /^(\d+)\/(\d+)$/.exec(t);
+  if (m) return Number(m[1]) / Number(m[2]);
+  return /^\d+(\.\d+)?$/.test(t) ? Number(t) : null;
+}
+
+/**
+ * A portion row's volume in mL, or null when it isn't volumetric. Real FDC
+ * exports encode the measure three different ways (all three are in
+ * production data — a parser that only reads measure_unit_id sees almost no
+ * densities, which is exactly the bug this replaced):
+ *   Foundation — real measure_unit_id + numeric `amount`
+ *   SR Legacy  — measure_unit_id 9999, unit text in `modifier` ("cup, diced")
+ *   FNDDS      — measure_unit_id 9999, the whole measure in
+ *                `portion_description` ("1 cup", "1/2 cup, cooked"), `amount` empty
+ */
+function portionMl(row, measureUnits) {
+  const amount = Number(row.amount);
+  const named = unitMl(measureUnits.get(row.measure_unit_id));
+  if (named !== null && Number.isFinite(amount) && amount > 0) return amount * named;
+  const fromModifier = unitMl(row.modifier);
+  if (fromModifier !== null && Number.isFinite(amount) && amount > 0) return amount * fromModifier;
+  const desc = String(row.portion_description ?? "").trim();
+  const m = /^(\S+(?:\s+\d+\/\d+)?)\s+(.+)$/.exec(desc);
+  if (m) {
+    const qty = parseQty(m[1]);
+    const ml = unitMl(m[2]);
+    if (qty !== null && qty > 0 && ml !== null) return qty * ml;
+  }
+  return null;
+}
 
 const DENSITY_MIN = 0.05;
 const DENSITY_MAX = 2.0;
@@ -102,17 +163,15 @@ export function buildBundle({ fdcDir, out, dataTypes = DEFAULT_DATA_TYPES, prior
     cols[column] = amount;
   }
 
-  // fdc_id → densities derived from volumetric portions
+  // fdc_id → densities derived from volumetric portions (any of the three
+  // encodings portionMl() understands; the median across measures wins below).
   const densitiesByFood = new Map();
   for (const row of portionRows) {
-    const unit = (measureUnits.get(row.measure_unit_id) ?? "").toLowerCase();
-    const mlPerUnit = MEASURE_ML[unit];
-    if (!mlPerUnit) continue;
-    const amount = Number(row.amount);
+    const ml = portionMl(row, measureUnits);
+    if (ml === null || ml <= 0) continue;
     const gramWeight = Number(row.gram_weight);
-    if (!Number.isFinite(amount) || amount <= 0) continue;
     if (!Number.isFinite(gramWeight) || gramWeight <= 0) continue;
-    const rho = gramWeight / (mlPerUnit * amount);
+    const rho = gramWeight / ml;
     if (rho < DENSITY_MIN || rho > DENSITY_MAX) continue;
     const list = densitiesByFood.get(row.fdc_id) ?? [];
     list.push(rho);
@@ -269,11 +328,20 @@ export function openBundle(path) {
   }
   const byId = db.prepare("SELECT * FROM foods WHERE fdc_id = ?");
   const byDesc = db.prepare("SELECT * FROM foods WHERE description = ? COLLATE NOCASE LIMIT 1");
-  const byFts = hasFts
-    ? db.prepare(
+  // meta.fts says the INDEX is in the file; whether this reader's SQLite can
+  // use it is a separate question (node:sqlite ships without fts5 on some
+  // platforms). Probe by preparing — on failure, degrade to LIKE instead of
+  // making the bundle unreadable.
+  let byFts = null;
+  if (hasFts) {
+    try {
+      byFts = db.prepare(
         "SELECT f.* FROM foods_fts JOIN foods f ON f.fdc_id = foods_fts.rowid WHERE foods_fts MATCH ? ORDER BY rank LIMIT ?",
-      )
-    : null;
+      );
+    } catch {
+      byFts = null;
+    }
+  }
   const byLike = db.prepare(
     "SELECT * FROM foods WHERE description LIKE ? ORDER BY length(description) LIMIT ?",
   );

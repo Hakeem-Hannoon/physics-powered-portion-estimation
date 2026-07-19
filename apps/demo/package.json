@@ -13,6 +13,7 @@
     "ios": "expo run:ios",
     "android": "expo run:android",
     "build:nutrients": "node --experimental-sqlite ../../nutrition/starter/build-starter.mjs --out assets/nutrients.sqlite --priors ../../model/priors/priors.json",
+    "build:nutrients:full": "node --experimental-sqlite ../../nutrition/starter/build-full.mjs --out assets/nutrients.sqlite --priors ../../model/priors/priors.json --fdc-dir",
     "build:models": "node scripts/fetch-models.mjs",
     "build:vocab": "node scripts/build-vocab-embeddings.mjs"
   },

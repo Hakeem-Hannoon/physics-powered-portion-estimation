@@ -110,6 +110,17 @@ export class ExpoSqliteNutrientStore implements NutrientStore {
       "SELECT value FROM meta WHERE key = 'fts'",
     );
     this.hasFts = fts?.value === "1";
+    if (this.hasFts) {
+      // meta.fts says the index is in the FILE; whether this build of SQLite
+      // can read it is this runtime's business. Probe once — if the fts5
+      // module is missing, every later query would throw, so degrade to LIKE
+      // now instead of failing lookups at estimate time.
+      try {
+        await db.getFirstAsync("SELECT rowid FROM foods_fts LIMIT 1");
+      } catch {
+        this.hasFts = false;
+      }
+    }
     const shape = await db.getFirstAsync<ShapeRow>(
       "SELECT * FROM shape_priors WHERE class = ?",
       "_global",
@@ -151,8 +162,9 @@ export class ExpoSqliteNutrientStore implements NutrientStore {
       );
     }
     if (!row) {
-      // Full-text best hit when the bundle has FTS5; else a LIKE fallback
-      // (adequate for the small starter bundle). Mirrors the Node openBundle.
+      // Full-text best hit when bundle AND runtime both have FTS5; else a
+      // LIKE fallback (fine even for the ~14k-food full bundle — milliseconds
+      // on device). Mirrors the Node openBundle.
       const q = ftsQuery(term);
       if (q && this.hasFts) {
         row = await db.getFirstAsync<FoodRow>(

@@ -74,11 +74,13 @@ npm test
 npm run typecheck
 ```
 
-Build the full nutrient bundle (optional — the demo ships with a small starter database):
+Rebuild the nutrient bundle (the demo ships with the full generic-food FDC database, curated 58-food set overlaid on top):
 
 ```bash
-# download the FDC CSVs first: https://fdc.nal.usda.gov/download-datasets/
-npm run etl:bundle -- --fdc-dir ./fdc-csv --out nutrient-bundle.sqlite
+# download the per-type FDC CSV zips (Foundation, SR Legacy, FNDDS) and unzip:
+# https://fdc.nal.usda.gov/download-datasets/
+cd apps/demo && npm run build:nutrients:full -- ~/Downloads/fdc
+# or the 58-food curated set alone: npm run build:nutrients
 ```
 
 Run the demo on a device:

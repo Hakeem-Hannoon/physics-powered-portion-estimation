@@ -14,11 +14,11 @@ afterAll(() => rmSync(workDir, { recursive: true, force: true }));
 describe("nutrient bundle ETL", () => {
   it("builds a bundle from FDC CSVs, filtering to generic data types", () => {
     const stats = buildBundle({ fdcDir: fixtures, out: bundlePath });
-    // The branded soda row is excluded; rice and banana stay.
-    expect(stats.foods).toBe(2);
-    // Rice has two volumetric (cup) portions; the banana portion ("medium")
-    // carries no volume, so only rice gets a density.
-    expect(stats.withDensity).toBe(1);
+    // The branded soda row is excluded; rice, banana, carrots, oatmeal stay.
+    expect(stats.foods).toBe(4);
+    // Rice (measure_unit "cup"), carrots (SR modifier), oatmeal (FNDDS
+    // portion_description) all carry volume; banana's "medium" doesn't.
+    expect(stats.withDensity).toBe(3);
     // No priors passed → a single default _global shape prior is seeded.
     expect(stats.shapePriors).toBe(1);
   });
@@ -37,12 +37,25 @@ describe("nutrient bundle ETL", () => {
     bundle.close();
   });
 
+  it("derives density from the SR Legacy and FNDDS portion encodings too", () => {
+    const bundle = openBundle(bundlePath);
+    // SR Legacy: measure_unit_id 9999, unit as free text in `modifier`
+    // ("cup, chopped"); the "serving" row must not contribute.
+    // 128 g per 236.588 mL → 0.541 g/mL.
+    expect(bundle.get(1004)!.density_g_per_ml).toBeCloseTo(0.541, 2);
+    // FNDDS: the whole measure lives in `portion_description` ("1/2 cup"),
+    // `amount` empty; "Quantity not specified" must not contribute.
+    // 117 g per 118.294 mL → 0.989 g/mL.
+    expect(bundle.get(1005)!.density_g_per_ml).toBeCloseTo(0.989, 2);
+    bundle.close();
+  });
+
   it("finds foods by text search", () => {
     const bundle = openBundle(bundlePath);
     const hits = bundle.search("rice");
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0]!.fdc_id).toBe(1001);
-    expect(bundle.count()).toBe(2);
+    expect(bundle.count()).toBe(4);
     bundle.close();
   });
 

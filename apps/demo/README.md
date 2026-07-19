@@ -20,8 +20,11 @@ no picker.
   label (propose→confirm) — the chips cover the whole vocabulary.
 - **Geometry** — real. Ruler → homography → area → volume → mass (MATH.md).
 - **Nutrition** — **real USDA data** via `ExpoSqliteNutrientStore`, reading the
-  bundled `assets/nutrients.sqlite` (58 common foods; rebuild with
-  `npm run build:nutrients`, or the full FDC bundle via `npm run etl:bundle`).
+  bundled `assets/nutrients.sqlite`: the **full generic-food FDC database**
+  (~13.7k foods) with the curated 58-food set overlaid so the classifier's
+  labels keep their hand-checked rows. Rebuild with
+  `npm run build:nutrients:full -- <fdc-csv-dir>` (or the curated set alone via
+  `npm run build:nutrients`).
 
 This app lives outside the npm workspaces so the root install stays light; it
 links the packages by `file:` path.
