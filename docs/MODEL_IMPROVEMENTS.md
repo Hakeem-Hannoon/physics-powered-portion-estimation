@@ -103,13 +103,26 @@ produces, and (optionally) bump `--image-size` above 256 if the extra detail
 helps (test it; more pixels ≠ free if the backbone bottlenecks). This is the
 training-time twin of the capture change.
 
-## 6. Standard ML tuning — see the Mass Regressor note
+## 6. Standard ML tuning — ✅ top three implemented (run 2)
 
-Augmentation (color jitter, random-resized-crop, overhead-safe vertical flip),
-conditioning-vector normalization, loss weighting (up-weight mass — it's the
-shipped metric, since production is *mass → classify → USDA kcal/g*), backbone /
-schedule sweeps, geometry-feature audit, regularization. Full list with rationale:
-`docs/vault/Mass Regressor Model.md` → "Improving the model."
+The three highest-payoff levers are now in `mass_regressor_nutrition5k.py`, each
+default-on and each ablatable back to the run-1 configuration:
+
+- **Augmentation** (`--aug`): mild random-resized-crop, overhead-safe vertical
+  flip, photometric jitter — pixels only, `cond`/targets untouched.
+- **Input normalization** (`--input-norm`): ImageNet pixel norm **plus**
+  train-split standardization of log(area)/height, stored as model buffers so
+  every export carries its own preprocessing (the app still feeds [0,1] pixels
+  and raw physical units).
+- **Loss weighting** (`--mass-weight 2 --kcal-weight 1`): mass is the shipped
+  metric, since production is *mass → classify → USDA kcal/g*.
+
+The script also prints a **geometry-only baseline** (the anchor scored alone on
+the test split) before training — the honest "what does the CNN add?" number
+and a one-line manifest audit. Still open from the standard set: backbone /
+schedule sweeps, deeper regularization, `--image-size` (the #5 knob, now a
+flag). Full rationale: `docs/vault/Mass Regressor Model.md` → "Improving the
+model."
 
 ---
 
@@ -120,9 +133,15 @@ synthetic data — 23 checks): the physics anchor returns sane grams, the residu
 identity `out_mass = anchor + head_residual` holds, `--no-residual` bypasses it,
 the scale-noise path relabels `"ruler"` and perturbs area while leaving the
 no-noise path clean, and a full forward→loss→backward→checkpoint round-trips.
-So a GPU run won't fail on a shape/logic bug. The **accuracy** result (does v1
-beat 24.1%) still needs the real Nutrition5k training run — that's yours to kick
-off (notebook 03); record the number in `MODELS_REGISTRY.md` Stage 4.
+The run-2 levers (§6) got the same treatment — **32 checks**: augmentation
+leaves `cond`/targets untouched, the anchor reads *raw* units while FiLM sees
+standardized ones, run-1 checkpoints still load (identity normalization), the
+2:1 loss blend matches a hand computation, a 2-epoch `main()` trains and saves a
+self-describing checkpoint, and the ONNX export (`export/export_onnx.py`)
+matches torch to 1e-4 under onnxruntime. So a GPU run won't fail on a
+shape/logic bug. The **accuracy** result (does run 2 beat 24.1%) still needs the
+real Nutrition5k training run — that's yours to kick off (notebook 03); record
+the number in `MODELS_REGISTRY.md` Stage 4.
 
 ## Running the A/B
 

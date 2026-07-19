@@ -37,9 +37,29 @@ default, both ablatable — see docs/MODEL_IMPROVEMENTS.md #1, #2):
      source to "ruler", so the model is robust to ruler-grade input at inference
      instead of being surprised by it.
 
+Run-2 standard-tuning levers (docs/vault/Mass Regressor Model.md → "Improving
+the model" #1–#3), each on by default and each ablatable back to the 24.1%
+run-1 configuration:
+
+  3. Overhead-safe augmentation (--aug): mild random-resized-crop, vertical
+     flip, photometric jitter. Only the pixels are perturbed — the conditioning
+     vector and targets are measurements, not appearance, and stay untouched.
+  4. Input normalization inside the model (--input-norm): ImageNet mean/std on
+     pixels + train-split standardization of log(area)/height, stored as model
+     buffers so any export carries its own preprocessing and the app contract
+     stays "plain [0,1] pixels, raw physical units".
+  5. Loss weighting (--mass-weight/--kcal-weight, default 2:1): mass is the
+     shipped metric (production kcal = mass × USDA kcal/g), so it gets the
+     larger gradient share; kcal stays as an auxiliary regularizer.
+
+Before training starts, the script prints the geometry-only baseline (the
+physics anchor scored alone on the test split) — the honest "what does the CNN
+add?" number for the P3 A/B, and a manifest sanity check in one line.
+
 The backbone is exchangeable via --backbone (fastvit_t8 for ANE-friendly
 inference, efficientnet-lite for LiteRT). Everything exports through
-export/export_coreml.py.
+export/export_coreml.py (Core ML) and export/export_onnx.py (ONNX for the
+demo app's onnxruntime-react-native runtime).
 
 Data: a manifest CSV produced by data/prepare_nutrition5k.py with columns
   image_path, area_m2, height_m, mass_g, kcal, split
@@ -68,6 +88,19 @@ from torch.utils.data import DataLoader, Dataset
 
 SCALE_SOURCES = ["lidar", "ruler", "reference_object", "stated", "none"]
 COND_DIM = 3 + len(SCALE_SOURCES)
+
+# ImageNet statistics for the pretrained backbone (--input-norm). Applied
+# INSIDE the model via registered buffers, not in the dataset: the exported
+# graph then carries its own preprocessing, so the app keeps feeding plain
+# [0, 1] pixels and can never drift out of sync with the training-time input.
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
+def _uniform(lo: float, hi: float) -> float:
+    """Uniform sample through torch's RNG so DataLoader per-worker seeding
+    covers the augmentation draws too (Python's `random` would share state)."""
+    return lo + (hi - lo) * torch.rand(1).item()
 
 # Physics anchor (residual mode). Reference density for m̂ = ρ·V — a neutral
 # ~water value; the learned residual absorbs each food's true density (0.15–1.1
@@ -128,6 +161,7 @@ class MealRegionDataset(Dataset):
         scale_noise: float = 0.0,
         ruler_prob: float = 0.0,
         height_noise: float = 0.0,
+        aug: bool = False,
     ):
         self.rows = manifest.reset_index(drop=True)
         self.image_size = image_size
@@ -136,24 +170,56 @@ class MealRegionDataset(Dataset):
         self.scale_noise = scale_noise    # σ of the global log-scale error (~ruler)
         self.ruler_prob = ruler_prob      # fraction of train examples simulated as ruler
         self.height_noise = height_noise  # σ of independent height-stroke jitter
+        self.aug = aug                    # run-2 augmentation (lever #1); train only
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def __getitem__(self, idx: int):
         row = self.rows.iloc[idx]
+        image = Image.open(row.image_path).convert("RGB")
+        # Mild random-resized-crop (lever #1, train only). Two jobs: generic
+        # regularization on a ~3.5k-dish dataset, and production parity — at
+        # inference the crop comes from a predicted mask whose bounds wobble
+        # around the food. MILD (≥ 80% of the area) because dropped pixels are
+        # food the conditioning still counts: `cond` keeps the measured area of
+        # the WHOLE region, so an aggressive crop would decouple appearance
+        # from physics.
+        if self.train and self.aug:
+            w, h = image.size
+            area_frac = _uniform(0.8, 1.0)
+            aspect = _uniform(0.9, 1.1)
+            cw = min(w, round(math.sqrt(w * h * area_frac * aspect)))
+            ch = min(h, round(math.sqrt(w * h * area_frac / aspect)))
+            x0 = int(torch.randint(0, w - cw + 1, (1,)).item())
+            y0 = int(torch.randint(0, h - ch + 1, (1,)).item())
+            image = image.crop((x0, y0, x0 + cw, y0 + ch))
         # Image → CHW float tensor in [0, 1]. A square resize is fine: the crop
         # is already region-tight and the scale lives in `cond`, not in the
         # pixel dimensions, so aspect distortion costs the model nothing.
-        image = Image.open(row.image_path).convert("RGB").resize(
-            (self.image_size, self.image_size)
-        )
+        image = image.resize((self.image_size, self.image_size))
         x = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
-        # Horizontal flip is the ONLY safe augmentation here — a plate has no
-        # canonical left/right, but vertical flips or rotations would fight the
-        # fixed overhead geometry the conditioning encodes.
+        # Horizontal flip — a plate has no canonical left/right. Kept outside
+        # --aug so --no-aug reproduces the run-1 configuration exactly.
         if self.train and torch.rand(1).item() < 0.5:
             x = torch.flip(x, dims=[2])
+        if self.train and self.aug:
+            # Vertical flip: safe *because the view is overhead* — from above,
+            # a plate has no canonical up/down either. (Side-view datasets do:
+            # gravity gives them an up, which is why the run-1 comment ruled
+            # this out before the overhead framing was thought through.)
+            if torch.rand(1).item() < 0.5:
+                x = torch.flip(x, dims=[1])
+            # Photometric jitter: mass is invariant to the kitchen's lighting,
+            # so teach that invariance instead of letting the net bind density
+            # cues to Nutrition5k's fixed camera rig. Pixels only — `cond` and
+            # the targets are measurements, not appearance.
+            x = x * _uniform(0.8, 1.2)                       # brightness
+            mean = x.mean()
+            x = (x - mean) * _uniform(0.8, 1.2) + mean       # contrast
+            gray = x.mean(dim=0, keepdim=True)
+            x = gray + (x - gray) * _uniform(0.8, 1.2)       # saturation
+            x = x.clamp(0.0, 1.0)
 
         # Conditioning vector — layout must stay in lockstep with COND_DIM and
         # the app-side encoder:
@@ -232,6 +298,8 @@ class ScaleConditionedMassRegressor(nn.Module):
         residual: bool = True,
         kappa: float = DEFAULT_KAPPA,
         phi: float = DEFAULT_PHI,
+        input_norm: bool = False,
+        cond_stats: tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0),
     ):
         super().__init__()
         # Physics-anchor config (technique #1). When residual is True the mass head
@@ -239,6 +307,20 @@ class ScaleConditionedMassRegressor(nn.Module):
         self.residual = residual
         self.kappa = kappa
         self.phi = phi
+        # Input normalization (lever #2) lives INSIDE the model, as buffers:
+        # buffers ride in the state_dict and in any traced/ONNX graph, so the
+        # preprocessing the weights were trained with is the preprocessing the
+        # phone runs — one object, no drift. Off → identity, i.e. run-1 input.
+        self.input_norm = input_norm
+        mean = IMAGENET_MEAN if input_norm else (0.0, 0.0, 0.0)
+        std = IMAGENET_STD if input_norm else (1.0, 1.0, 1.0)
+        self.register_buffer("pixel_mean", torch.tensor(mean).view(1, 3, 1, 1))
+        self.register_buffer("pixel_std", torch.tensor(std).view(1, 3, 1, 1))
+        # (log_area mean, log_area std, height mean, height std) over the train
+        # split; identity when input_norm is off.
+        self.register_buffer(
+            "cond_stats", torch.tensor(cond_stats, dtype=torch.float32)
+        )
         self.backbone = timm.create_model(backbone, pretrained=True, num_classes=0)
         # Size FiLM/head from the backbone's ACTUAL pooled-feature width, not
         # backbone.num_features — they differ on some nets (MobileNetV3 reports
@@ -254,17 +336,59 @@ class ScaleConditionedMassRegressor(nn.Module):
             nn.Linear(feature_dim, 256), nn.SiLU(), nn.Dropout(0.1), nn.Linear(256, 2)
         )
 
+    def _normalize_cond(self, cond: torch.Tensor) -> torch.Tensor:
+        """Standardize the continuous dims for FiLM. Raw, log(area) sits near −5
+        and height near 0.04 with a −1 sentinel — FiLM's MLP would first have to
+        learn its own rescaling before γ/β mean anything. A missing height maps
+        to 0 (the standardized mean), not a standardized −1 (a ~10σ outlier);
+        `has_height` already carries the missingness signal."""
+        log_area = (cond[:, 0] - self.cond_stats[0]) / self.cond_stats[1]
+        height = torch.where(
+            cond[:, 2] > 0.5,
+            (cond[:, 1] - self.cond_stats[2]) / self.cond_stats[3],
+            torch.zeros_like(cond[:, 1]),
+        )
+        return torch.cat(
+            [log_area.unsqueeze(1), height.unsqueeze(1), cond[:, 2:]], dim=1
+        )
+
     def forward(self, image: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        h = self.backbone(image)              # pooled visual features, R^feature_dim
-        out = self.head(self.film(h, cond))   # modulate by physics, then regress
+        x = (image - self.pixel_mean) / self.pixel_std   # identity when norm off
+        h = self.backbone(x)                  # pooled visual features, R^feature_dim
+        film_cond = self._normalize_cond(cond) if self.input_norm else cond
+        out = self.head(self.film(h, film_cond))   # modulate by physics, then regress
         if not self.residual:
             return out                        # [log_mass, log_kcal] directly
         # Technique #1: mass head = geometry prior + learned residual. The head
         # starts near 0 (its final Linear is ~zero-init in effect), so training
         # begins at the physics estimate and learns the density/shape correction.
+        # Computed from the RAW cond — the physics needs real units (m², m);
+        # normalization is only the network's diet.
         anchor = physics_log_mass(cond, self.kappa, self.phi)  # (B,) log-grams
         log_mass = anchor + out[:, 0]
         return torch.stack([log_mass, out[:, 1]], dim=1)
+
+
+def load_checkpoint(path: str) -> tuple["ScaleConditionedMassRegressor", dict]:
+    """Rebuild the exact trained model from a self-describing checkpoint — the
+    one loader every export script goes through, so reconstruction logic can't
+    fork. Run-1 checkpoints (no config keys, no normalization buffers in the
+    state_dict) load with identity normalization via strict=False, reproducing
+    their training-time behavior; run-2+ checkpoints restore their buffers and
+    load strictly."""
+    saved = torch.load(path, map_location="cpu")
+    state = saved["state_dict"]
+    has_norm_buffers = "pixel_mean" in state
+    model = ScaleConditionedMassRegressor(
+        saved["backbone"],
+        residual=saved.get("residual", True),
+        kappa=saved.get("kappa", DEFAULT_KAPPA),
+        phi=saved.get("phi", DEFAULT_PHI),
+        input_norm=saved.get("input_norm", False),
+    )
+    model.load_state_dict(state, strict=has_norm_buffers)
+    model.eval()
+    return model, saved
 
 
 def mape(pred_log: torch.Tensor, true_log: torch.Tensor) -> float:
@@ -305,13 +429,38 @@ def main() -> None:
         "--height-noise", type=float, default=0.05,
         help="σ of independent height-stroke jitter under the ruler simulation",
     )
+    # Run-2 standard-tuning levers (vault: Mass Regressor Model → "Improving the
+    # model"). All default-on; `--no-aug --no-input-norm --mass-weight 1` +
+    # the technique flags reproduce the 24.1% run-1 configuration.
+    parser.add_argument(
+        "--aug", action=argparse.BooleanOptionalAction, default=True,
+        help="overhead-safe augmentation: mild crop, vertical flip, color jitter",
+    )
+    parser.add_argument(
+        "--input-norm", action=argparse.BooleanOptionalAction, default=True,
+        help="ImageNet pixel norm + conditioning standardization inside the model",
+    )
+    parser.add_argument(
+        "--mass-weight", type=float, default=2.0,
+        help="loss weight on log-mass (the shipped metric)",
+    )
+    parser.add_argument(
+        "--kcal-weight", type=float, default=1.0,
+        help="loss weight on the auxiliary log-kcal head",
+    )
+    parser.add_argument(
+        "--image-size", type=int, default=256,
+        help="square crop resolution fed to the backbone (lever #5 knob)",
+    )
     args = parser.parse_args()
 
     kappa, phi = load_priors(args.priors)
     print(
         f"config: residual={args.residual} (κ={kappa:.4f}, φ={phi:.3f}), "
         f"scale_noise={args.scale_noise} ruler_prob={args.ruler_prob} "
-        f"height_noise={args.height_noise}"
+        f"height_noise={args.height_noise}, aug={args.aug} "
+        f"input_norm={args.input_norm} loss={args.mass_weight:g}:{args.kcal_weight:g} "
+        f"image_size={args.image_size}"
     )
 
     # 1. Data. Split on the manifest's `split` column — Nutrition5k's official
@@ -324,10 +473,12 @@ def main() -> None:
     train_loader = DataLoader(
         MealRegionDataset(
             train_df,
+            image_size=args.image_size,
             train=True,
             scale_noise=args.scale_noise,
             ruler_prob=args.ruler_prob,
             height_noise=args.height_noise,
+            aug=args.aug,
         ),
         batch_size=args.batch_size,
         shuffle=True,
@@ -335,21 +486,66 @@ def main() -> None:
         pin_memory=True,
     )
     test_loader = DataLoader(
-        MealRegionDataset(test_df, train=False),
+        MealRegionDataset(test_df, image_size=args.image_size, train=False),
         batch_size=args.batch_size,
         num_workers=4,
     )
+
+    # Train-split statistics for --input-norm (lever #2). Heights: measured
+    # ones only (> 0) — the −1 sentinel is a flag, not a height, and would
+    # poison the moments. The stats ride in the model as buffers, so every
+    # export inherits them automatically.
+    cond_stats = (0.0, 1.0, 0.0, 1.0)
+    if args.input_norm:
+        log_area = np.log(np.clip(train_df.area_m2.to_numpy(dtype=float), 1e-6, None))
+        if "height_m" in train_df.columns:
+            heights = pd.to_numeric(train_df.height_m, errors="coerce").fillna(-1.0)
+            measured = heights.to_numpy(dtype=float)
+            measured = measured[measured > 0]
+        else:
+            measured = np.array([])
+        cond_stats = (
+            float(log_area.mean()),
+            float(max(log_area.std(), 1e-6)),
+            float(measured.mean()) if measured.size else 0.0,
+            float(max(measured.std(), 1e-6)) if measured.size else 1.0,
+        )
+        print(f"cond stats (train): log_area {cond_stats[0]:.3f}±{cond_stats[1]:.3f}, "
+              f"height {cond_stats[2]:.3f}±{cond_stats[3]:.3f}")
 
     # 2. Model + optimization. AdamW with cosine decay across the whole run;
     #    SmoothL1 (Huber) on the log-targets shrugs off the occasional mislabeled
     #    dish instead of letting one outlier dominate the gradient.
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ScaleConditionedMassRegressor(
-        args.backbone, residual=args.residual, kappa=kappa, phi=phi
+        args.backbone,
+        residual=args.residual,
+        kappa=kappa,
+        phi=phi,
+        input_norm=args.input_norm,
+        cond_stats=cond_stats,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    loss_fn = nn.SmoothL1Loss()
+    # Lever #3 — mass carries the larger gradient share (it's the shipped
+    # metric; production kcal = mass × USDA kcal/g, the head is auxiliary).
+    loss_fn = nn.SmoothL1Loss(reduction="none")
+    loss_weights = torch.tensor(
+        [args.mass_weight, args.kcal_weight], device=device
+    )
+
+    # Geometry-only baseline: score the physics anchor alone on the test split,
+    # exactly like the model is scored. Two jobs: the honest "what does the CNN
+    # add?" number for the P3 A/B, and a one-line manifest audit — if this
+    # prints something absurd, the area/height extraction is broken and no
+    # amount of training will fix it downstream.
+    with torch.no_grad():
+        base = [
+            mape(physics_log_mass(cond, kappa, phi), target[:, 0])
+            for _, cond, target in test_loader
+        ]
+    print(f"geometry-only baseline: mass MAPE {float(np.mean(base)):.3f} "
+          f"(the anchor alone — the number the CNN must beat)")
 
     # 3. Train. One pass per epoch, then score MAPE on the held-out split and
     #    checkpoint only when mass MAPE improves — so the best model survives
@@ -359,7 +555,8 @@ def main() -> None:
         model.train()
         for image, cond, target in train_loader:
             image, cond, target = image.to(device), cond.to(device), target.to(device)
-            loss = loss_fn(model(image, cond), target)   # SmoothL1 over [log_mass, log_kcal]
+            # Per-element SmoothL1 over [log_mass, log_kcal], then the 2:1 weighting.
+            loss = (loss_fn(model(image, cond), target) * loss_weights).mean()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -376,11 +573,24 @@ def main() -> None:
         mass_mape = float(np.mean(mass_mapes))
         kcal_mape = float(np.mean(kcal_mapes))
         print(f"epoch {epoch + 1}: mass MAPE {mass_mape:.3f}, kcal MAPE {kcal_mape:.3f}")
-        if mass_mape < best_mape:   # new best → save (backbone name travels with the weights)
+        if mass_mape < best_mape:   # new best → save
             best_mape = mass_mape
             Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            # The checkpoint is self-describing: everything the export scripts
+            # need to reconstruct this exact model (backbone, anchor config,
+            # normalization mode, input size) travels WITH the weights, so an
+            # export can never silently rebuild a mismatched architecture. The
+            # normalization statistics themselves are buffers inside state_dict.
             torch.save(
-                {"backbone": args.backbone, "state_dict": model.state_dict()},
+                {
+                    "backbone": args.backbone,
+                    "residual": args.residual,
+                    "kappa": kappa,
+                    "phi": phi,
+                    "input_norm": args.input_norm,
+                    "image_size": args.image_size,
+                    "state_dict": model.state_dict(),
+                },
                 args.output,
             )
     print(f"best mass MAPE: {best_mape:.3f} → {args.output}")

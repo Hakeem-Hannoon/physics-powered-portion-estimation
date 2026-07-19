@@ -8,7 +8,7 @@ Run in order on a GPU runtime (H100/A100). Each notebook mounts Drive, clones th
 |---|---|---|---|---|
 | 01 | `01_download_nutrition5k.ipynb` | none | ~1 h (bandwidth) | **Optional** — a persistent raw archive on Drive (~15–25 GB; skips 160 GB of unused video). 03 stages its own local copy, so skip this unless you want the archive |
 | 02 | `02_train_segformer_foodseg103.ipynb` | H100 | 2–6 h | `checkpoints/segformer-*` + the FoodSeg103 mIoU result row |
-| 03 | `03_train_mass_regressor.ipynb` | H100 | ~2 h + staging + extraction | stages Nutrition5k to local disk, then `out/n5k-manifest.csv`, `out/priors.json` (→ update `DEFAULT_KAPPA`), `checkpoints/mass-regressor.pt` + MAPE result row |
+| 03 | `03_train_mass_regressor.ipynb` | H100 | ~2 h + staging + extraction | stages Nutrition5k to local disk, then `out/n5k-manifest.csv`, `out/priors.json` (→ update `DEFAULT_KAPPA`), `checkpoints/mass-regressor.pt` + MAPE result row, `out/mass-regressor.onnx` for the demo app |
 | 04 | `04_export_coreml.ipynb` | none | minutes | `out/*.mlpackage.zip` for the iOS app |
 
 Notes:

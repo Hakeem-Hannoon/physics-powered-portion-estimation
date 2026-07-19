@@ -11,6 +11,7 @@ Training, export, and prior fitting. The full model landscape with verified IDs,
 | `train/mass_regressor_nutrition5k.py` | The scale-conditioned mass regressor (P3) — CNN backbone + FiLM physics conditioning | **H100** — ~1–2 h at batch 128 |
 | `priors/fit_priors.py` | Fits κ / φ / h̄ per class from the manifest (MATH.md §4) | laptop, seconds |
 | `export/export_coreml.py` | Checkpoints → fp16 `.mlpackage` for iOS | laptop (macOS for verification) |
+| `export/export_onnx.py` | Checkpoints → `.onnx` for the demo app's `onnxruntime-react-native` (preprocessing baked into the graph) | laptop / Colab, minutes |
 
 ## Colab
 
@@ -26,6 +27,6 @@ Ready-to-run notebooks for every GPU step live in [`colab/`](colab/) — they mo
 5. `python priors/fit_priors.py --manifest out/n5k-manifest.csv` → update `DEFAULT_KAPPA` in `@ppe/pipeline` and the `shape_priors` table in `nutrition/`
 6. Job 2: `python train/mass_regressor_nutrition5k.py --manifest out/n5k-manifest.csv`
    — benchmarks to beat: 26.1% calorie MAPE (RGB), 16.5% (RGB+depth)
-7. `python export/export_coreml.py …` for both artifacts, then record results in the root README's Results table
+7. `python export/export_coreml.py …` (iOS) / `python export/export_onnx.py …` (the demo app) for both artifacts, then record results in the root README's Results table
 
 Models used as-is (already converted by Apple, no training needed): `apple/coreml-sam2.1-tiny` (promptable segmentation), `apple/coreml-mobileclip` (zero-shot classification), `apple/coreml-depth-anything-v2-small` (relative depth fallback, rescaled by the ruler).

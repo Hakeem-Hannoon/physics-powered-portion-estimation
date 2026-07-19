@@ -51,17 +51,18 @@ def export_segformer(checkpoint: str, out: str, size: int) -> None:
     ml.save(out)
 
 
-def export_regressor(checkpoint: str, out: str, size: int) -> None:
+def export_regressor(checkpoint: str, out: str, size: int | None) -> None:
     import sys
     from pathlib import Path
 
     sys.path.append(str(Path(__file__).resolve().parent.parent / "train"))
-    from mass_regressor_nutrition5k import COND_DIM, ScaleConditionedMassRegressor
+    from mass_regressor_nutrition5k import COND_DIM, load_checkpoint
 
-    saved = torch.load(checkpoint, map_location="cpu")
-    model = ScaleConditionedMassRegressor(saved["backbone"])
-    model.load_state_dict(saved["state_dict"])
-    model.eval()
+    # Reconstruct from the checkpoint's own config (backbone, anchor,
+    # normalization mode) — never from this script's defaults, which could
+    # silently diverge from how the weights were trained.
+    model, saved = load_checkpoint(checkpoint)
+    size = size or int(saved.get("image_size", 256))
 
     traced = torch.jit.trace(
         model, (torch.rand(1, 3, size, size), torch.rand(1, COND_DIM))
@@ -90,7 +91,7 @@ def main() -> None:
     if args.kind == "segformer":
         export_segformer(args.checkpoint, args.out, args.size or 512)
     else:
-        export_regressor(args.checkpoint, args.out, args.size or 256)
+        export_regressor(args.checkpoint, args.out, args.size)
     print(f"saved {args.out}")
 
 
