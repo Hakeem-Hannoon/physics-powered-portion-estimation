@@ -1,44 +1,18 @@
-# Physics-Powered Portion Estimation
+# MacroScope Portion Scout
 
-**(photo, measured scale) → calories + macros + micros — on the phone.**
+**A Spotter Labs project for physics-powered nutrition portion estimation.**
 
-An end-to-end meal-photo nutrition estimator whose portion step is grounded in measured geometry. While framing the shot, the user holds a finger on the screen and drags: an AR ruler measures a real-world distance through the camera (across the plate, up the side of the food). That measurement pins the metric scale of the scene — the single variable that decides whether a photo shows 200 g of rice or 400 g of rice, and the variable a lone 2D image mathematically withholds.
+[![CI](https://github.com/Hakeem-Hannoon/MacroScope-Portion-Scout/actions/workflows/ci.yml/badge.svg)](https://github.com/Hakeem-Hannoon/MacroScope-Portion-Scout/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node ≥ 22.5](https://img.shields.io/badge/node-%E2%89%A5%2022.5-339933.svg)](package.json)
 
-Built by [Spotter Labs](https://spotter-labs.com) to power meal logging in the **Spotter** app; packaged as a standalone library any app can adopt.
+MacroScope Portion Scout turns a meal photo plus a measured scale gesture into calories, macros, and micros on the phone. While framing the shot, the user holds a finger on the screen and drags: an AR ruler measures a real-world distance through the camera (across the plate, up the side of the food). That measurement pins the metric scale of the scene — the single variable that decides whether a photo shows 200 g of rice or 400 g of rice, and the variable a lone 2D image mathematically withholds.
 
-## How it fits together
+Built by [Spotter Labs](https://spotter-labs.com) for the **Spotter** app's meal logging pipeline, then packaged as a standalone library any app can adopt. Developed under the codename `physics-powered-portion-estimation` (old links redirect).
 
-The app is a short pipeline from a finger on glass to a plate of numbers. Five
-blocks, each swappable behind a narrow interface:
+## Why this name
 
-| Block | Where | What it does |
-|---|---|---|
-| **Capture** | [`modules/expo-portion-capture`](modules/expo-portion-capture) | Native AR screen: aim, tap‑hold‑drag the AR ruler across the plate, shoot. Emits a versioned **`CapturePayload`** — image + camera intrinsics + pose + table plane + ruler strokes + depth (when present). |
-| **Geometry** | [`packages/geometry`](packages/geometry) | The metric math as pure, zero‑dependency code (pinhole camera, plane homography, area → volume → mass). Not a model — ~300 lines, unit‑tested to float precision. |
-| **Pipeline** | [`packages/pipeline`](packages/pipeline) | `estimateMeal(payload, deps)`: **segment → classify → portion (geometry) → nutrients**, behind zod‑validated contracts and four adapter interfaces (`Segmenter`, `Classifier`, `NutrientStore`, `DepthProvider`). |
-| **Models + data** | [`model/`](model), [`nutrition/`](nutrition) | The learned/curated pieces the adapters plug in: segmentation, classification, the scale‑conditioned **mass regressor**, shape priors, and the USDA **nutrient bundle** (SQLite). |
-| **Demo** | [`apps/demo`](apps/demo) | Wires it end‑to‑end on a real device (the P0/P1 validation drills). |
-
-**The flow, end to end:**
-
-1. **Capture** — the AR ruler pins the scene's **metric scale** from the phone's
-   IMU (physics, not a neural net's guess), and the shutter freezes the image
-   with everything the math needs.
-2. **Segment + classify** — the pipeline finds each food region and labels it
-   (on‑device models; see [`docs/REAL_ADAPTERS.md`](docs/REAL_ADAPTERS.md)).
-3. **Portion — the physics** — pure geometry turns the measured scale into metric
-   **area → volume → mass** per region (the step a lone 2D photo can't do).
-4. **Nutrients** — the label resolves to per‑100 g USDA values in the bundled
-   database; `mass × per‑100 g` → calories/macros/micros, with a **propagated
-   error band** and an Atwater cross‑check.
-5. **Propose → confirm** — every number is a labeled, editable estimate: the
-   system proposes, the user confirms, and only then is it logged.
-
-The one idea to internalize: **the portion step is measured geometry, not a
-guess** — the AR‑ruler scale is the input no RGB‑only calorie app has, and it's
-what moves calorie error from ~26% (RGB) toward ~16% (metric depth). Full
-derivations in [`docs/MATH.md`](docs/MATH.md); the shape of the system in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+`MacroScope` combines nutrition macros with camera-based measurement. `Portion Scout` mirrors the energy of `RAGuccino Nutrition Scout`: a small specialist that finds the missing piece before the model writes food data down. This one scouts mass, volume, and scale, so the calorie math survives real plates, weird bowls, and the snack you definitely meant to measure before eating half of it.
 
 ## The problem this solves
 
@@ -70,19 +44,8 @@ CAPTURE (native AR, geometry only)                  INFERENCE (on-device)
 
 The capture gesture: aim the sparkle reticle at the food, hold the plate button to anchor a 3D point (a raycast against tracked geometry), slide your thumb on the plate to sweep the reticle — the phone stays steady — and release to commit the stroke with a live cm readout. Horizontal strokes calibrate scale; a vertical stroke up the food measures its height. The shutter then freezes the frame together with everything the math needs: intrinsics, camera pose, plane equation, strokes, and the depth map when the hardware has one.
 
-### In action
-
-<p>
-  <img src="docs/images/capture-idle.png" width="24%" alt="AR capture screen: sparkle reticle searching, plate button, intro hint" />
-  <img src="docs/images/capture-measuring.png" width="24%" alt="Holding the plate: ruler stretching across the food with a live cm readout" />
-  <img src="docs/images/capture-stroke.png" width="24%" alt="Committed stroke with its length label; shutter enabled" />
-  <img src="docs/images/estimate-card.png" width="24%" alt="Estimate card: area, volume, grams, kcal, and the quality block" />
-</p>
-
-1. `capture-idle.png` — the capture screen: sparkle reticle (dashed = searching), the 45 lb plate trigger, the hold-steady intro hint.
-2. `capture-measuring.png` — plate held, thumb sliding: the yellow ruler stretches with a live cm readout.
-3. `capture-stroke.png` — released: the committed stroke with its label, shutter brightened.
-4. `estimate-card.png` — back in the app: measured area/volume, grams, kcal/macros, ruler residual and the ± error band.
+<!-- Screenshot gallery goes here once the PNGs are committed to docs/images/:
+     capture-idle.png · capture-measuring.png · capture-stroke.png · estimate-card.png -->
 
 **Capture technique** — it's physics, so technique matters:
 
@@ -90,11 +53,68 @@ The capture gesture: aim the sparkle reticle at the food, hold the plate button 
 - **Screen parallel to the table, shooting from above.** Grazing rays amplify depth error, and the top-down view minimizes the perspective correction the homography has to unwind.
 - **Get close** — under a meter. Angular resolution converts to millimeters up close and to centimeters far away; the app warns live beyond 1.5 m.
 
-Every result ships with a propagated error estimate and stays user-editable — the system proposes, the user confirms.
+Downstream, every number is a labeled, editable estimate with a propagated error band — the system proposes, the user confirms, and only then is anything logged. The one idea to internalize: **the portion step comes from measured geometry** — the AR-ruler scale is the input no RGB-only calorie app has, and it's what moves calorie error from ~26% (RGB) toward ~16% (metric depth).
+
+What to expect by hardware tier (sensor details in [`docs/HARDWARE.md`](docs/HARDWARE.md); all model inference is single-shot per capture, under ~2 s on recent phones):
+
+| Tier | Hardware | Scale source | Expected per-item error |
+|---|---|---|---|
+| 1 | LiDAR iPhone/iPad | depth + ruler check | ~15–20% |
+| 2 | any ARKit/ARCore phone | VIO ruler | ~20–30% |
+| 3 | plain photo | reference object / stated plate size | ~30%+ |
+| 4 | nothing | priors | labeled estimate |
+
+## Quickstart
+
+Prerequisites: **Node ≥ 22.5** (the nutrition ETL uses Node's built-in SQLite). The demo app additionally needs Xcode or Android Studio and a **physical device** — ARKit/ARCore report "unsupported" in simulators and Expo Go.
+
+```bash
+npm install          # root workspaces: geometry, pipeline, nutrition ETL
+npm test
+npm run typecheck
+```
+
+Build the full nutrient bundle (optional — the demo ships with a small starter database):
+
+```bash
+# download the FDC CSVs first: https://fdc.nal.usda.gov/download-datasets/
+npm run etl:bundle -- --fdc-dir ./fdc-csv --out nutrient-bundle.sqlite
+```
+
+Run the demo on a device:
+
+```bash
+cd apps/demo
+npm install                # the demo lives outside the root workspaces on purpose
+npm run build:models       # fetch the on-device ONNX weights (~80 MB, gitignored)
+npx expo install --fix     # align expo/react-native versions with the SDK
+npx expo run:ios           # or run:android
+```
+
+What's real in the demo, model wiring, and fallback behavior: [`apps/demo/README.md`](apps/demo/README.md).
+
+## Repository layout
+
+TypeScript monorepo + a Swift native module + Python training. Five blocks, each swappable behind a narrow interface: everything metric lives in plain, unit-tested code, and ML sits behind adapters that can be swapped per platform.
+
+| Path | What it is |
+|---|---|
+| [`modules/expo-portion-capture`](modules/expo-portion-capture) | **Capture** — native ARKit screen (Swift): the tap-hold-drag ruler, stroke undo, coaching overlay, HEIC + depth export. Emits a versioned `CapturePayload` — image + camera intrinsics + pose + table plane + ruler strokes + depth (when present). |
+| [`packages/geometry`](packages/geometry) | **Geometry** — the metric math as pure, zero-dependency code: pinhole camera, ARKit→CV conversion, ray–plane intersection, plane homography, areas, volumes, densities, Atwater energy, error budgets. Unit-tested against synthetic scenes to float precision. |
+| [`packages/pipeline`](packages/pipeline) | **Pipeline** — `estimateMeal(payload, deps)`: segment → classify → portion (geometry) → nutrients, behind zod-validated contracts and four adapter interfaces (`Segmenter`, `Classifier`, `NutrientStore`, `DepthProvider`), with mocks for all four. |
+| [`model/`](model), [`nutrition/`](nutrition) | **Models + data** — training and export for the learned pieces (segmentation fine-tune, the scale-conditioned mass regressor, shape priors), and the ETL that turns USDA FoodData Central CSVs into the FTS-indexed SQLite nutrient bundle. |
+| [`apps/demo`](apps/demo) | **Demo** — dev-build Expo app running the whole stack on a real device: SlimSAM segmentation + MobileCLIP-S0 zero-shot classification via ONNX Runtime, metric geometry, USDA nutrients. |
+
+Design decisions worth knowing:
+
+- **Contracts are enforced at both edges.** The native module is treated as an untrusted producer; `capturePayloadSchema` validates every payload, and `estimateResultSchema` validates the pipeline's own output before it returns.
+- **Geometry is code, ML is a plug.** The portion step is plain linear algebra, testable against synthetic scenes to float precision. Swapping segmentation models or inference runtimes touches adapters only.
+- **Unknown food stays unknown.** A label without a database match returns `mass_g: null` plus a `no_db_match` flag — the geometry still reports size, and the UI asks the user. The system declines to invent nutrition facts.
+- **Serialization pitfalls are encoded, and tested.** simd column-major → contract row-major, ARKit y-up camera → CV y-down, intrinsics rescaling with resolution — each has a dedicated test, because each silently corrupts every downstream number when wrong.
 
 ## The math
 
-Full derivations with every symbol defined: [`docs/MATH.md`](docs/MATH.md) — or learn the whole project from the ground up (the math, the code, the models, and the CS behind them) in the [**`docs/vault/`** Obsidian vault](docs/vault/Home.md), a linked set of teaching notes starting at [Home](docs/vault/Home.md) and [Beginner Guide](docs/vault/Beginner%20Guide.md). The spine of it:
+Full derivations with every symbol defined: [`docs/MATH.md`](docs/MATH.md) — or learn the whole project from the ground up (the math, the code, the models, and the CS behind them) in the [`docs/vault/` Obsidian vault](docs/vault/Home.md), starting at [Home](docs/vault/Home.md) and [Beginner Guide](docs/vault/Beginner%20Guide.md). The spine of it:
 
 **1. Metric world coordinates from the IMU** (§1). Cameras alone recover geometry up to an unknown scale; the accelerometer measures true m/s², and the visual-inertial optimizer pins the scale by reconciling integrated IMU displacement with visually-tracked displacement. Result: ARKit distances are in meters on every supported phone.
 
@@ -108,115 +128,71 @@ Full derivations with every symbol defined: [`docs/MATH.md`](docs/MATH.md) — o
 
 **6. Honest error budget** (§8). Relative errors combine in quadrature, with scale entering area squared. Propagated per-item expectations: **~30%** with priors only, **~20%** with a measured height — bracketing the published RGB (26.1%) and depth (16.5%) results from the geometry side. Multi-item meals do better: independent per-item errors shrink ~$1/\sqrt{k}$ on the total.
 
-## The software
-
-TypeScript monorepo + a Swift native module + Python training. Everything metric lives in plain, unit-tested code; ML sits behind narrow adapters and can be swapped per platform.
-
-| Path | What it is | Status |
-|---|---|---|
-| [`packages/geometry`](packages/geometry) | The math library: pinhole camera, ARKit→CV conversion, ray-plane, homography, areas, volumes, densities, Atwater, error budgets. Zero dependencies. | implemented, 20 tests |
-| [`packages/pipeline`](packages/pipeline) | `estimateMeal(payload, deps)`: zod-validated capture contract in, zod-validated estimate out. Model adapters (`Segmenter`, `Classifier`, `NutrientStore`, `DepthProvider`) + mocks. | implemented, 4 tests |
-| [`modules/expo-portion-capture`](modules/expo-portion-capture) | The Expo native module: full-screen ARKit capture with the tap-hold-drag ruler, stroke undo, coaching overlay, HEIC + depth export, row-major matrix serialization. | Swift implemented; needs device validation (P0) |
-| [`apps/demo`](apps/demo) | Dev-build Expo app: capture → pipeline with a placeholder segmenter — the P1 kitchen-scale drill. | implemented |
-| [`nutrition/`](nutrition) | ETL: USDA FoodData Central CSVs → SQLite bundle with per-100 g nutrients + portion-derived densities (FTS-indexed). Runs on Node's built-in SQLite, zero deps. | implemented, 3 tests |
-| [`model/`](model) | Training: SegFormer/FoodSeg103 fine-tune, the scale-conditioned mass regressor, Nutrition5k manifest extraction, prior fitting, Core ML export. | scripts ready; GPU runs pending |
-
-```bash
-npm install          # root workspaces: geometry, pipeline, nutrition ETL
-npm test             # 27 tests
-npm run typecheck
-
-# nutrient bundle (download FDC CSVs first — https://fdc.nal.usda.gov/download-datasets/)
-npm run etl:bundle -- --fdc-dir ./fdc-csv --out nutrient-bundle.sqlite
-
-# demo app (device required)
-cd apps/demo && npm install && npx expo run:ios
-```
-
-Design decisions worth knowing:
-
-- **Contracts are enforced at both edges.** The native module is treated as an untrusted producer; `capturePayloadSchema` validates every payload, and `estimateResultSchema` validates the pipeline's own output before it returns.
-- **Geometry is code, ML is a plug.** Stage 3 is ~300 lines of linear algebra with microsecond cost, testable against synthetic scenes to float precision. Swapping SAM for SegFormer, or Core ML for ExecuTorch, touches adapters only.
-- **Unknown food stays unknown.** A label without a database match returns `mass_g: null` plus a `no_db_match` flag — the geometry still reports size, and the UI asks the user. The system declines to invent nutrition facts.
-- **Serialization pitfalls are encoded, and tested.** simd column-major → contract row-major, ARKit y-up camera → CV y-down, intrinsics rescaling with resolution — each has a dedicated test, because each silently corrupts every downstream number when wrong.
-
-## The hardware
-
-Details in [`docs/HARDWARE.md`](docs/HARDWARE.md). Summary:
-
-- **IMU** — the metric anchor; present on every ARKit/ARCore phone. This is what lets tier-2 hardware do metric portions.
-- **Camera + factory calibration** — per-frame intrinsics from `frame.camera.intrinsics`; the K in every equation.
-- **LiDAR** (iPhone 12 Pro onward, Pro models) — 256×192 fused metric depth: measured volumes, height strokes on the food itself, instant planes.
-- **Apple Neural Engine / GPU** — all model inference is single-shot per capture (under ~2 s total on A15+); published Core ML numbers for our exact picks: MobileCLIP-S0 1.5 ms, Depth-Anything-V2-small 31–34 ms.
-
-| Tier | Hardware | Scale source | Expected per-item error |
-|---|---|---|---|
-| 1 | LiDAR iPhone/iPad | depth + ruler check | ~15–20% |
-| 2 | any ARKit/ARCore phone | VIO ruler | ~20–30% |
-| 3 | plain photo | reference object / stated plate size | ~30%+ |
-| 4 | nothing | priors | labeled estimate |
-
 ## The models
 
-Verified landscape with IDs, licenses, sizes, latencies: [`docs/MODELS.md`](docs/MODELS.md). The strategy in one line — buy segmentation and classification off the shelf, train the two things the shelf lacks:
+The strategy in one line: buy segmentation and classification off the shelf, train the two things the shelf lacks. The verified model landscape — exact IDs, licenses, sizes, latencies — lives in [`docs/MODELS.md`](docs/MODELS.md); what's wired on-device today is documented in [`docs/REAL_ADAPTERS.md`](docs/REAL_ADAPTERS.md).
 
-- **Use as-is:** `apple/coreml-sam2.1-tiny` (promptable segmentation — the ruler tap doubles as the prompt), `apple/coreml-mobileclip` (zero-shot labeling over a food vocabulary), `apple/coreml-depth-anything-v2-small` (relative depth on LiDAR-free devices, rescaled to metric by the ruler stroke).
+- **Running in the demo now** (via `onnxruntime-react-native`, iOS + Android): **SlimSAM** for promptable segmentation — the ruler tap doubles as the point prompt — and **MobileCLIP-S0** for zero-shot labeling over a curated food vocabulary.
 - **Fine-tune:** SegFormer-B0/B1 on FoodSeg103 — every public checkpoint for this dataset measures at mIoU ≤ 0.05, so shipping quality means training our own (`model/train/segformer_foodseg103.py`).
-- **Train (the novel part):** the **scale-conditioned mass regressor** — a small CNN backbone whose features are FiLM-modulated by the measured physics (log area, height, scale source), regressing log-mass on Nutrition5k. Web-verified: nothing public conditions on a measured AR scale. Architecture rationale, including why recurrent networks have no role here, in `docs/MODELS.md` §4.
+- **Train (the novel part):** the **scale-conditioned mass regressor** — a small CNN backbone whose features are FiLM-modulated by the measured physics (log area, height, scale source), regressing log-mass on Nutrition5k. Nothing public conditions on a measured AR scale; the architecture rationale is in `docs/MODELS.md` §4.
+- **Depth on LiDAR-free devices:** Depth-Anything-V2-small, rescaled to metric by the ruler stroke.
 
-## Testing set & results
+Both GPU jobs — the SegFormer fine-tune and the Nutrition5k regressor — are packaged as ready-to-run Colab notebooks in [`model/colab/`](model/colab), documented in [`model/README.md`](model/README.md). Everything else (ETL, exports, prior fitting, the full test suite) runs on a laptop.
 
-Three layers. Results are recorded here as each layer runs; current as of 2026-07-09.
+## Validation & benchmarks
 
-**1. Unit + property tests (implemented — all green).**
+Three layers, from float precision to real kitchens. Live status for all of it: [`docs/STATUS.md`](docs/STATUS.md).
 
-| Suite | Tests | What it proves |
-|---|---|---|
-| `packages/geometry` | 20 | Synthetic-scene ground truth: ray↔pixel round-trips at 1e-9 m, a known 10×10 cm square recovered from pixels to 0.01 m² at 1e-9, ruler self-check residual < 1e-9, the off-plane inflation exactly Z/(Z−h) and its correction exact, ARKit→CV pose conversion, intrinsics rescaling, volume/energy/error-budget algebra |
-| `packages/pipeline` | 15 | End-to-end estimate on a synthetic ARKit capture (values within physical bounds, totals consistent, budget numbers match MATH.md), vertical-stroke height route, unknown-food refusal, malformed-payload rejection; plus the propose→confirm edit helpers — portion rescale, relabel (matched/unknown/Atwater), totals, and the schema-re-validating `withEditedItem` |
-| `nutrition` | 11 | FDC ETL: data-type filtering, density derivation from cup portions (158 g/cup → 0.668 g/mL), FTS search, `shape_priors` seeding + `priors.json` ingestion; and the `SqliteNutrientStore` — label resolution (exact/FTS/alias), water-density fallback, null-on-miss, end-to-end mass→nutrition |
-| **Total** | **46 passed** | `npm test`; CI runs the same suite on every push |
+**1. Unit + property tests** — `npm test`; CI runs the suite and typecheck on every push.
 
-**2. Physical validation (pending device build).**
+| Suite | What it proves |
+|---|---|
+| `packages/geometry` | Synthetic-scene ground truth: ray↔pixel round-trips at 1e-9 m, a known 10×10 cm square recovered from pixels to 0.01 m², ruler self-check residual < 1e-9, the off-plane inflation exactly Z/(Z−h) and its correction, ARKit→CV pose conversion, intrinsics rescaling, volume/energy/error-budget algebra |
+| `packages/pipeline` | End-to-end estimates on a synthetic ARKit capture (values within physical bounds, totals consistent, budget numbers match MATH.md), the vertical-stroke height route, unknown-food refusal, malformed-payload rejection, model-input preprocessing, zero-shot cosine matching, and the propose→confirm edit helpers |
+| `nutrition` | FDC ETL — data-type filtering, density derivation from cup portions (158 g/cup → 0.668 g/mL), FTS search, shape-prior seeding — and the SQLite store: exact/FTS/alias label resolution, water-density fallback, null-on-miss, end-to-end mass→nutrition |
 
-| Drill | Protocol | Pass bar | Result |
+**2. Model benchmarks** — first training runs; the improvement plan lives in the [Mass Regressor vault note](docs/vault/Mass%20Regressor%20Model.md).
+
+| Benchmark | Metric | Reference points | Result |
 |---|---|---|---|
-| P0 — ruler accuracy | 10 known objects × 3 angles × 2 lighting, stroke vs tape measure | median ≤ 5 mm on 20 cm spans | *pending* |
-| P1 — geometry-only mass | ~30 home meals, kitchen-scale truth, placeholder segmentation | median mass error ≤ 25% | *pending* |
+| FoodSeg103 val | mIoU | public checkpoints ≤ 0.05; competent B0 ≈ 0.25 | **0.246** (nvidia/mit-b0) |
+| Nutrition5k test | mass MAPE | MATH.md §8 physics budget ~20–30% | **24.1%** |
+| Nutrition5k test | calorie MAPE (auxiliary kcal head) | 26.1% RGB / 16.5% RGB+depth | ~32%, untuned — see below |
 
-**3. Model benchmarks.**
+The mass number is the one that drives shipped calories: production computes **mass → classify → USDA kcal/g**, not calories directly. The direct-kcal head is a harder problem (caloric density varies ~60× across foods) and hasn't been tuned yet.
 
-| Benchmark | Metric | Baselines to beat | Result |
-|---|---|---|---|
-| FoodSeg103 val | mIoU | public checkpoints ≤ 0.05; competent B0 ≈ 0.25, B1 ≈ 0.32 | **0.246** (nvidia/mit-b0) ✅ |
-| Nutrition5k test split | mass MAPE | — | **24.1%** (within the §8 ~20–30% budget) |
-| Nutrition5k test split | calorie MAPE (regressor kcal head) | 26.1% (RGB) / 16.5% (RGB+depth) | **~32%** — see note |
-| End-to-end vs NutriBench-style meals | macro accuracy | GPT-4o+CoT ≈ 66.8% Acc@7.5g carbs | *pending* |
-
-> **Regressor note** (first run: `mobilenetv3_large_100`, 50 epochs, n=3,484). Mass MAPE **24.1%** lands inside the MATH.md §8 physics budget — and it's the number that drives *shipped* calories, since production computes calories as **mass → classify → USDA kcal/g**, not from the auxiliary kcal head. The direct kcal head (**~32%**) is above the RGB baseline: predicting calories directly is harder (caloric density varies ~60× across foods) and the model is untuned. The improvement plan (augmentation, loss weighting, backbone, feature normalization) is in the [Mass Regressor vault note](docs/vault/Mass%20Regressor%20Model.md).
-
-## Training on cloud GPUs
-
-Two jobs need the H100s; both are packaged as ready-to-run Colab notebooks in [`model/colab/`](model/colab/), with all **outputs** persisted to the project's shared Drive folder ([view-only](https://drive.google.com/drive/folders/1y1hDjkfHsazsOoe4LJjWKoEKj2bHKKjd)) so runtime disconnects lose nothing (the raw Nutrition5k dataset stages to the VM's local disk instead — Drive's FUSE mount aborts on the thousands of per-dish RGB-D reads):
-
-1. **SegFormer fine-tune** — `model/train/segformer_foodseg103.py`, single H100, ~2–3 h (B0) / 4–6 h (B1). Dataset streams from Hugging Face.
-2. **Nutrition5k pipeline** — one-time 181 GB `gsutil` download (plan ~200 GB disk), manifest extraction (`model/data/prepare_nutrition5k.py`, CPU-bound), prior fitting (seconds), then the mass regressor (`model/train/mass_regressor_nutrition5k.py`, ~1–2 h at batch 128).
-
-Everything else — ETL, exports, priors, all 27 tests — runs on a laptop.
+**3. Physical validation** — the P0 tape-measure drill (ruler vs. known objects; pass bar: median ≤ 5 mm on 20 cm spans) and the P1 kitchen-scale drill (~30 real meals; pass bar: median mass error ≤ 25%) are specified in [`docs/STATUS.md`](docs/STATUS.md) and run on-device next.
 
 ## Roadmap
 
-Live status — what's done, in progress, and next — is tracked in **[`docs/STATUS.md`](docs/STATUS.md)**. The milestones:
+Live status — what's done, in progress, and next — is tracked in [`docs/STATUS.md`](docs/STATUS.md). The milestones:
 
-- **P0 — ruler validation.** Build `apps/demo` on a device, run the tape-measure drill, record results above.
-- **P1 — physics before ML.** Kitchen-scale drill with placeholder segmentation: proves the geometry pipeline on real food.
-- **P2 — models in.** SAM 2.1 tiny + MobileCLIP zero-shot wired as adapters; SegFormer fine-tune replaces the placeholder.
+- **P0 — ruler validation.** Build `apps/demo` on a device and run the tape-measure drill.
+- **P1 — physics before ML.** Kitchen-scale drill: proves the geometry pipeline on real food.
+- **P2 — models in.** On-device segmentation + zero-shot classification as adapters; the SegFormer fine-tune replaces zero-shot where it wins.
 - **P3 — the regressor.** Nutrition5k training with scale conditioning; A/B against pure geometry; ship the winner per confidence.
 - **P4 — benchmark + integrate.** Fill the results tables; expose the `EstimateResult` to Spotter's propose→confirm flow.
 
 ## Use in Spotter
 
-This library is the portion engine for [Spotter](https://spotter-labs.com)'s photo meal logging. `EstimateResult.items` maps 1:1 onto Spotter's `MealItem` (`description`/`proteinG`/`carbsG`/`fatG`/`micros`) and feeds the existing `create_pending_macro_log` propose→confirm flow — the coach proposes what the camera measured, the user adjusts portions with real numbers behind the slider, and the database write happens only on confirmation. Micro keys match Spotter's `micros.ts` set exactly.
+This library is the portion engine for [Spotter](https://spotter-labs.com)'s photo meal logging. Estimate items map one-to-one onto Spotter's meal-item shape and feed its existing propose→confirm flow: the coach proposes what the camera measured, the user adjusts portions with real numbers behind the slider, and nothing is logged until they confirm.
+
+## Documentation
+
+| Doc | What's inside |
+|---|---|
+| [`docs/MATH.md`](docs/MATH.md) | Every derivation, every symbol defined — IMU scale, ray casting, the homography, volume routes, error propagation |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The shape of the system: contracts, adapters, data flow |
+| [`docs/MODELS.md`](docs/MODELS.md) | The verified model landscape: IDs, licenses, sizes, latencies, decisions |
+| [`docs/REAL_ADAPTERS.md`](docs/REAL_ADAPTERS.md) | What's actually wired on-device and how the models were converted |
+| [`docs/HARDWARE.md`](docs/HARDWARE.md) | The sensors: IMU, camera calibration, LiDAR, neural engines |
+| [`docs/CAPTURE_QUALITY.md`](docs/CAPTURE_QUALITY.md) | Image-capture audit and the R1–R9 quality gates |
+| [`docs/STATUS.md`](docs/STATUS.md) | Single source of truth for status + roadmap |
+| [`docs/vault/`](docs/vault/Home.md) | Obsidian teaching vault — the whole project from the ground up, starting at [Home](docs/vault/Home.md) |
+
+## Contributing
+
+Issues and PRs are welcome. The bar is the one CI enforces on every push: `npm test` and `npm run typecheck` both green. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `docs:`, …). New to the codebase? Start with the [vault](docs/vault/Home.md).
 
 ## License
 

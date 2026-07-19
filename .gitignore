@@ -48,3 +48,7 @@ nutrition/*.db
 # SQLite journal sidecars (transient; the shipped bundle is a single file)
 *.sqlite-wal
 *.sqlite-shm
+
+# Editor state / stray run logs
+docs/.obsidian/
+run_output.txt

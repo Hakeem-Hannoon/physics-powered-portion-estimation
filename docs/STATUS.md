@@ -1,6 +1,6 @@
 # Project Status & Roadmap
 
-The single source of truth for where this project stands. Updated 2026-07-10.
+The single source of truth for where this project stands. Updated 2026-07-19.
 
 Companion docs: [`../README.md`](../README.md) (overview) · [`MATH.md`](MATH.md) (derivations) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (system design) · [`MODELS.md`](MODELS.md) (model landscape) · [`HARDWARE.md`](HARDWARE.md) (sensors/devices) · [`CAPTURE_QUALITY.md`](CAPTURE_QUALITY.md) (image-capture audit + R1–R9).
 
@@ -34,9 +34,9 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 
 ### Core libraries (TypeScript, tested)
 - ✅ **`@ppe/geometry`** — the entire `MATH.md` as zero-dependency code: pinhole camera + ARKit↔CV conversion, ray–plane intersection, the exact plane homography (pixels→cm²), off-plane bias correction, three volume routes (LiDAR height-field / area×height / shape prior), density→mass, Atwater energy, error-budget propagation, and the shake-gated stabilization helpers. **20 synthetic-scene tests** verifying ground truth to ~1e-9.
-- ✅ **`@ppe/pipeline`** — `estimateMeal(payload, deps)` with zod contracts enforced on **both** edges (capture payload in, estimate out), pluggable model adapters (`Segmenter`/`Classifier`/`NutrientStore`/`DepthProvider`), mocks, and the "unknown food returns null, never invents nutrition" rule. **4 end-to-end tests.**
-- ✅ **`nutrition/` ETL** — USDA FoodData Central CSVs → on-device SQLite bundle (per-100 g nutrients + portion-derived densities, FTS-indexed) on Node's built-in SQLite, zero deps. **3 tests.**
-- ✅ **27 tests total green, typecheck clean, CI** runs the suite on every push.
+- ✅ **`@ppe/pipeline`** — `estimateMeal(payload, deps)` with zod contracts enforced on **both** edges (capture payload in, estimate out), pluggable model adapters (`Segmenter`/`Classifier`/`NutrientStore`/`DepthProvider`), mocks, and the "unknown food returns null, never invents nutrition" rule. **59 tests** (end-to-end estimates, edit helpers, model-input preprocessing, segment-everything reduction, zero-shot matching).
+- ✅ **`nutrition/` ETL** — USDA FoodData Central CSVs → on-device SQLite bundle (per-100 g nutrients + portion-derived densities, FTS-indexed) on Node's built-in SQLite, zero deps. **12 tests.**
+- ✅ **91 tests total green, typecheck clean, CI** runs the suite on every push.
 
 ### Android capture module (built, on-device, iterated from real testing)
 - ✅ **`expo-portion-capture` (Kotlin/ARCore)** — the full native capture screen, **built, installed, and running on a Pixel**:
@@ -61,7 +61,7 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 ### Training + infra (scripts ready, repo public)
 - ✅ **Training scripts** — SegFormer/FoodSeg103 fine-tune (eval memory-safe, writes `eval_results.json`), the scale-conditioned mass regressor (MobileNetV3 + FiLM), Nutrition5k manifest extraction, prior fitting, Core ML export.
 - ✅ **Colab notebooks 01–04** — Drive-backed, resumable, GCP-free download, token-aware/public clone, GPU auto-batch. All infra bugs (private-repo clone, gitignored script, HF-cache-on-Drive mmap, eval OOM) fixed.
-- ✅ **Repo is public** at [github.com/Hakeem-Hannoon/physics-powered-portion-estimation](https://github.com/Hakeem-Hannoon/physics-powered-portion-estimation).
+- ✅ **Repo is public** at [github.com/Hakeem-Hannoon/MacroScope-Portion-Scout](https://github.com/Hakeem-Hannoon/MacroScope-Portion-Scout) (renamed 2026-07-19 from the `physics-powered-portion-estimation` codename; old links redirect).
 
 ---
 
@@ -70,7 +70,7 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 ### Model training (running now, on the user's GPUs)
 - ✅ **SegFormer fine-tune (notebook 02)** — done: **mIoU 0.246** (nvidia/mit-b0), at the ~0.25 B0 target and vs ≤ 0.05 for every public FoodSeg103 checkpoint.
 - ✅ **Nutrition5k manifest + priors (notebook 03)** — manifest extracted (3,484 dishes; now resilient to corrupt captures), `priors.json` fit (κ=0.1687, φ=0.446, h̄=0.098 m) and **wired in** — replaced the `DEFAULT_KAPPA = 0.55` placeholder in `@ppe/pipeline` + `nutrition/`'s `shape_priors`; committed as `model/priors/priors.json`.
-- ✅ **Mass regressor (notebook 03)** — trained: **mass MAPE 24.1%** (inside the §8 budget), kcal head ~32%. Tuning to beat the 26.1% RGB / 16.5% depth calorie baselines is the next experiment (`docs/vault/Mass Regressor Model.md` → "Improving the model").
+- ✅ **Mass regressor (notebook 03)** — trained: **mass MAPE 24.1%** (inside the §8 budget), kcal head ~32%. **Run 2 is staged** to beat the 26.1% RGB / 16.5% depth calorie baselines: the top three tuning levers (overhead-safe augmentation, in-model input normalization, 2:1 mass-weighted loss) are implemented behind flags and smoke-verified (32 CPU checks incl. ONNX parity); the script now prints the **geometry-only baseline** before training (the honest P3 A/B number), and notebook 03 ends with an ONNX export for the demo app. Kick off on an A100/H100 (`docs/vault/Mass Regressor Model.md` → "Improving the model").
 
 ### Physical validation (the user's phone + kitchen)
 - 🟡 **P0 — ruler accuracy** — measure known objects vs a tape measure at multiple angles. Pass bar: median ≤ 5 mm on 20 cm spans. This certifies the physics on real hardware → first real README results row.
@@ -85,14 +85,14 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 
 1. ✅ **Wire the fitted priors — done.** κ=0.1687 / φ=0.446 / h̄=0.098 m (n=3,484) are now `DEFAULT_KAPPA`/`DEFAULT_MOUND_PHI` in `@ppe/pipeline`, the ETL's default `shape_priors`, and `model/priors/priors.json`. Per-class values await per-class labels.
 2. 🟡 **iOS capture parity** — the §2.4 stabilization stats + capture-quality pass (R1–R9) are now ported, so iOS is at **accuracy** parity under its existing tap-drag UI. Remaining: the reticle + plate-trackpad **interaction** redesign (finger-never-covers-food), then dev-build and run P0 on iPhone. iPhone Pro (LiDAR) additionally unlocks the measured height-field volume route (highest-accuracy tier).
-3. ✅ **Real model adapters — the vision stack is on-device.** The demo now **classifies the food and weighs it end-to-end** with no picker (guide: `docs/REAL_ADAPTERS.md`):
-   - **`Classifier`** — MobileCLIP-S0 zero-shot (ONNX image encoder + precomputed text embeddings). **Validated 6/6 top-1** on real photos through the shipped preprocessing.
-   - **`Segmenter`** — SlimSAM (SAM-2.1-tiny-class) point-prompted at the frame center; a hand-coded Node run of the shipped math reproduced transformers.js's mask bbox to the pixel. Falls back to a centered square on failure.
+3. ✅ **Real model adapters — the vision stack is on-device.** The demo now **identifies every ingredient and weighs each one end-to-end** with no picker (guide: `docs/REAL_ADAPTERS.md`):
+   - **`Classifier`** — MobileCLIP-S0 zero-shot over a **58-food FoodSeg103 vocabulary** (ONNX image encoder + precomputed text embeddings). Expanding the vocab from 12 → 58 words is training-free (zero-shot takes any word list) and names real ingredients — carrot, shrimp, tomato, cheese — instead of forcing them into 12. **Validated 12/12 top-1** on held-out photos of the newly-added foods. The vocabulary, the USDA nutrient bundle, and the label→FDC map are all generated from one source (`nutrition/starter/foods.mjs`) so they can't drift.
+   - **`Segmenter`** — SlimSAM (SAM-2.1-tiny-class) in **"segment everything"** mode: encode once, prompt the mask decoder at each point of an 8×8 grid (one point per call, the shape validated in Node — batched point-grids risk a native crash on device), then dedupe overlapping masks via IoU non-max suppression into **one region per ingredient** (exact-area polygon footprints, so adjacent foods don't double-count). A hand-coded Node run of the shipped preprocessing reproduced transformers.js's mask bbox to the pixel. Falls back to a centered square on failure.
    - **`NutrientStore`** — real (see item 4).
-   - **Runtime decision:** `onnxruntime-react-native` (one cross-platform ONNX per model) instead of the ExecuTorch custom-model path — this *is* the de-risking of that "highest-risk unknown". The platform-agnostic preprocessing lives in `@ppe/pipeline` (`preprocess.ts`, 13 tests).
+   - **Runtime decision:** `onnxruntime-react-native` (one cross-platform ONNX per model) instead of the ExecuTorch custom-model path — this *is* the de-risking of that "highest-risk unknown". The platform-agnostic preprocessing + mask reduction lives in `@ppe/pipeline` (`preprocess.ts` + `segment-all.ts`, 34 tests).
    - **Remaining:** on-device runtime validation (the P2 drill — mask quality on real captures, latency), then `DepthProvider` (LiDAR iOS; Android Depth16) for the highest-accuracy volume route.
-4. 🟡 **On-device nutrient bundle** — **done for the demo**: `ExpoSqliteNutrientStore` over expo-sqlite reads a bundled SQLite DB (`apps/demo/assets/nutrients.sqlite`), with **per-food shape classes** (mound/flat resolution) and the curated label→FDC map (`nutrition/label-map.json`). A 12-food **starter** bundle ships now (`nutrition/starter/build-starter.mjs`); the full ~15k-food FDC bundle (`npm run etl:bundle`) and the fitted **per-class** κ/φ/h̄ are the remaining steps.
-5. ⬜ **Core ML / ExecuTorch export + inference wiring** — notebook 04 exports; wire the exported models into the module and benchmark on-device latency.
+4. 🟡 **On-device nutrient bundle** — **done for the demo**: `ExpoSqliteNutrientStore` over expo-sqlite reads a bundled SQLite DB (`apps/demo/assets/nutrients.sqlite`), with **per-food shape classes** (mound/flat resolution) and the curated label→FDC map (`nutrition/label-map.json`). A 58-food **starter** bundle ships now (`nutrition/starter/build-starter.mjs`, generated from the shared `foods.mjs` food set); the full ~15k-food FDC bundle (`npm run etl:bundle`) and the fitted **per-class** κ/φ/h̄ are the remaining steps.
+5. 🟡 **Model export + inference wiring** — the demo-app export path exists: `model/export/export_onnx.py` emits `mass-regressor.onnx` for `onnxruntime-react-native` with preprocessing baked into the graph (contract: [0,1] crop + raw physics vector; notebook 03 step 4 runs it automatically). Remaining: wire a mass-regressor adapter into the demo behind a confidence A/B vs pure geometry (P3), then the Core ML path (notebook 04) for iOS-native consumers.
 6. ⬜ **Confirm/edit UI** — adjust the segment outline, swap the label, tweak portions before logging (the contract already anticipates this).
 7. ⬜ **Spotter integration** (in the gym-bro repo) — add the module + `@ppe/*` packages to Spotter's mobile app, a "Scan meal" entry in the coach/Nutrition tab, map `EstimateResult.items` → `create_pending_macro_log`, Pro-gate behind `entitlements.nutrition`, honor `hide_numbers`, and fall back to the existing cloud VLM path on unsupported devices.
 8. ⬜ **P3/P4 — the regressor in the loop + benchmarks** — A/B the scale-conditioned regressor against pure geometry, ship the winner per confidence, fill the Nutrition5k + NutriBench-style results tables.
@@ -116,7 +116,7 @@ CAPTURE (AR ruler, geometry only)   →   SEGMENT → CLASSIFY → PORTION (metr
 | **P0** — ruler accuracy | The physics on real hardware (≤ 5 mm on 20 cm) | 🟡 ready to run on device |
 | **P1** — geometry-only mass | The metric pipeline on real food (≤ 25% mass) | 🟡 pending P0 |
 | **P2** — models in | On-device segmentation + classification wired | 🟡 wired + Node-validated (classify 6/6; SAM bbox reproduced); on-device drill next |
-| **P3** — the regressor | Scale-conditioned mass regression, A/B vs geometry | 🟡 trained (mass 24.1%); tuning + A/B next |
+| **P3** — the regressor | Scale-conditioned mass regression, A/B vs geometry | 🟡 trained (mass 24.1%); run 2 staged, ONNX export ready; A/B next |
 | **P4** — benchmark + integrate | Nutrition5k/NutriBench numbers; live in Spotter | ⬜ |
 
 ---

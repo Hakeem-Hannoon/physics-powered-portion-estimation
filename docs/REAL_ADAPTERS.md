@@ -9,7 +9,7 @@ guide to how they're wired. The adapter interfaces are in
 |---|---|---|---|
 | **NutrientStore** | `lookup(label) → FoodRecord \| null` | ✅ **real & shipped** | `apps/demo/src/nutrient-store.ts` (expo-sqlite) |
 | **Classifier** | `classify(uri, region) → {label, confidence, topK}` | ✅ **real & shipped** | MobileCLIP-S0 zero-shot: `ZeroShotClassifier` (`@ppe/pipeline`) + `clip-embedder.ts` |
-| **Segmenter** | `segment(uri, size) → Region[]` | ✅ **real & shipped** | SlimSAM point-prompt: `sam-segmenter.ts` |
+| **Segmenter** | `segment(uri, size) → Region[]` | ✅ **real & shipped** | SlimSAM "segment everything" (all ingredients): `sam-segmenter.ts` |
 
 **Runtime:** `onnxruntime-react-native` — one ONNX artifact per model, running on
 both iOS and Android. This was chosen over the ExecuTorch custom-model path
@@ -39,7 +39,7 @@ embeddings).
 The demo now reads **real USDA FoodData Central** nutrition from a bundled SQLite
 database instead of the single hard-coded rice record.
 
-- **Bundle:** `apps/demo/assets/nutrients.sqlite` — a curated *starter* set of 12
+- **Bundle:** `apps/demo/assets/nutrients.sqlite` — a curated *starter* set of 58
   common foods with real per-100 g values + portion-derived densities, a
   **per-food `shape_class`** (mound/flat — bread & salmon use the flat slab
   route), and per-class shape priors seeded from MATH.md §4 (the fitted per-class
@@ -54,10 +54,16 @@ database instead of the single hard-coded rice record.
   foods) instead of the starter set — `npm run etl:bundle -- --fdc-dir ./fdc-csv
   --out apps/demo/assets/nutrients.sqlite` (download: <https://fdc.nal.usda.gov/download-datasets/>).
 - **Label mapping** (the "quality-critical data artifact"): `nutrition/label-map.json`
-  — the curated map of terse classifier labels + synonyms ("rice", "grilled
-  chicken") → FDC descriptions. It's copied next to the DB by `npm run build:nutrients`
-  and loaded as the store's `aliases` (`FOOD_ALIASES` in `apps/demo/src/foods.ts`).
-  Grow it toward the full FoodSeg103 vocabulary once the classifier vocab is fixed.
+  — the map of terse classifier labels + synonyms ("carrot", "grilled chicken")
+  → FDC descriptions. It's **generated** from the shared food set
+  (`nutrition/starter/build-label-map.mjs` reads `nutrition/starter/foods.mjs`),
+  copied next to the DB by `npm run build:nutrients`, and loaded as the store's
+  `aliases` (`FOOD_ALIASES` in `apps/demo/src/foods.ts`).
+- **Single source of truth** — `nutrition/starter/foods.mjs` defines the food set
+  once (vocab word, FDC description, per-100 g USDA values, density, shape,
+  aliases); the classifier vocabulary, the nutrient bundle, and the label map are
+  all derived from it, so they can never drift. The set is a common subset of
+  FoodSeg103's classes (**58 foods**), so the classifier names real ingredients.
 
 ## 2. Classification — MobileCLIP-S0 zero-shot (shipped)
 
@@ -74,8 +80,15 @@ real:
    ImageNet mean/std (MobileCLIP's `preprocessor_config` has `do_normalize:false`).
 2. **Text embeddings** — precomputed offline (prompt-ensembled + L2-normalized)
    into `assets/food-vocab-embeddings.json` (`{label, embedding}[]` under `vocab`),
-   regenerable with `npm run build:vocab`. The vocab is the 12 starter-bundle
-   labels, resolved to FDC rows via `nutrition/label-map.json`.
+   regenerable with `npm run build:vocab`. The vocab is the **58-food FoodSeg103
+   subset** (`nutrition/starter/foods.mjs`), each label resolved to an FDC row via
+   `nutrition/label-map.json`. Zero-shot takes any word list, so this is a
+   training-free way to name real ingredients (carrot, shrimp, tomato…) instead
+   of forcing them into 12 words — validated **12/12** on held-out photos of foods
+   absent from the old vocabulary. Adding lookalikes (pork vs. beef) trades a
+   little accuracy on ambiguous raw shots; the propose→confirm UI + low-confidence
+   flags handle it, and the SegFormer-FoodSeg103 fine-tune (roadmap P2) is the
+   learned upgrade.
 3. **Wiring:** `makeClipClassifier(createClipEmbedder(session))` in
    `vision-adapters.ts` (`loadVisionDeps()`).
 
@@ -83,27 +96,63 @@ Validated: **6/6 top-1** on real photos (rice, chicken, broccoli, egg, banana,
 apple…) through this exact preprocessing. The label is *predicted*; the UI lets
 the user correct it (propose→confirm via `relabelItem`/`withEditedItem`).
 
-## 3. Segmentation — SlimSAM point-prompt (shipped)
+## 3. Segmentation — SlimSAM "segment everything" (shipped)
 
 `sam-segmenter.ts` runs **SlimSAM** (a SAM-2.1-tiny-class promptable model,
-`Xenova/slimsam-77-uniform`) via two ONNX sessions:
+`Xenova/slimsam-77-uniform`) in automatic-mask-generation mode, so the pipeline
+weighs **every ingredient** on the plate, not just the centered one. Two ONNX
+sessions:
 
-1. **Vision encoder** (`slimsam_vision_encoder.onnx`) — the frame is resized to
-   SAM's 1024 letterbox (`samResizeTarget`) and normalized+padded by
+1. **Vision encoder** (`slimsam_vision_encoder.onnx`) — run **once**. The frame is
+   resized to SAM's 1024 letterbox (`samResizeTarget`) and normalized+padded by
    `packSamTensor` (ImageNet mean/std, zero-pad bottom/right).
-2. **Mask decoder** (`slimsam_decoder.onnx`) — prompted with a single point at the
-   frame center (the capture UX centers the food; the ruler-tap pixel is the
-   documented upgrade) and the encoder's embeddings. Its multimask output is
-   reduced to the food region's bounding polygon in stored-image pixels
-   (`pickBestMaskIndex` avoids the whole-plate mask; `maskGridToImagePolygon` maps
-   the low-res grid back through the letterbox), from which the pipeline computes
-   metric area via the plane homography.
+2. **Mask decoder** (`slimsam_decoder.onnx`) — prompted at each point of a **P×P
+   grid** (`gridPointPrompts`, default 8×8), one point per call with the exact
+   `[1,1,1,2]` tensor shape the preprocessing was validated against. (Batching the
+   grid into one decoder call via the exported `point_batch_size` dim allocates a
+   ~48 MB output tensor and exercises a decoder path the model may not support at
+   runtime — either hard-crashes below the JS layer on device — so the sweep is
+   single-point; batching is a post-bring-up speed optimization.) Each point
+   proposes up to three masks; `pickBestMaskIndex` takes the best under a
+   whole-plate coverage cap, and `maskComponentPolygon` reduces it to its largest
+   connected component's **exact-area** rectilinear polygon (traced along
+   mask-grid lines, so shoelace area equals the foreground cell count — adjacent
+   ingredients get true, non-overlapping footprints instead of overlapping
+   bounding boxes).
+3. **Reduction** (`dedupeMaskCandidates`) — the grid throws off many overlapping
+   proposals per object, so this keeps the **largest mask of each object** and
+   suppresses anything sharing more than `overlapThreshold` of the smaller mask's
+   footprint (true mask overlap, not bbox IoU — a partial mask nested in a bigger
+   one has low IoU but ~1.0 containment, which bbox IoU misses). It also drops the
+   **whole-scene mask** (bbox fills the frame in both axes), sub-`minCoverage`
+   crumbs, and 1-D slivers (min-side / aspect). `gridPolygonToImage` maps each
+   survivor to stored-image pixels.
+
+Then in the pipeline, `estimateMeal` classifies + portions each region and
+**collapses items by food label** (`collapseByLabel`): SAM is class-agnostic and
+still emits a few overlapping masks per ingredient, so the largest-area mask per
+label is kept and the rest dropped — one entry per food, and a single ingredient
+is never counted twice in the totals.
 
 All the numeric math is pure, unit-tested code in `@ppe/pipeline`
-(`preprocess.ts`). A hand-coded Node run of it reproduced transformers.js's SAM
-mask bbox to within a few pixels. On any failure the adapter falls back to a
-centered square, so classification + the metric geometry (weight) still run — the
-P1 drill's intended behavior.
+(`preprocess.ts` + `segment-all.ts`, 34 tests). A hand-coded Node run of the
+preprocessing reproduced transformers.js's SAM mask bbox to within a few pixels,
+and the full sweep + reduction was validated off-device (onnxruntime-node) on
+real food photos — one sensible region per ingredient, no duplicate/whole-scene
+masks. On any failure the adapter falls back to a centered square, so
+classification + the metric geometry (weight) still run — the P1 drill's intent.
+
+**Known limits (SlimSAM-tiny + a 58-word CLIP vocabulary):** foods outside the
+vocabulary are still labeled as the nearest class, and busy mixed dishes yield
+the occasional spurious region. Clean semantic multi-food segmentation is what
+the planned SegFormer-FoodSeg103 fine-tune (roadmap P2) is for; this SAM +
+expanded-zero-shot path is what ships on the models already on device.
+
+**Tuning** (`SamEverythingOptions` in `createSamSegmenter`): `pointsPerSide`
+trades recall for latency (more prompts find smaller/occluded items but run the
+decoder more times — it is one call per point); `iouThreshold` controls how
+aggressively near-duplicate masks merge; `minCoverage`/`maxCoverage` drop crumbs
+and the whole-plate mask; `maxRegions` caps downstream classify/portion cost.
 
 ## Runtimes & build
 
